@@ -162,6 +162,7 @@ describe("strict canonical contracts", () => {
       options: [],
       dependencies: [],
       priority: 100,
+      allowNotApplicable: false,
       mode: "collect",
       status: "open",
       aggSafe: true,
@@ -195,10 +196,12 @@ describe("strict canonical contracts", () => {
       status: "synthetic_scenario_only",
       metric: "synthetic_scenario_reach_index",
       unit: "relative_points_0_to_100",
+      baselineReachIndex: 54.5,
       reachIndex: 54.5,
+      deltaPoints: 0,
       whatIfRows: [],
       provenance: {
-        methodId: "synthetic_candidate_reach_v1",
+        methodId: "synthetic_candidate_reach_v2",
         dataBasis: "scenario_inputs_only",
         formula: "clamp(relative inputs)",
         usesLiveCandidateData: false,
@@ -207,6 +210,21 @@ describe("strict canonical contracts", () => {
         usesLlm: false,
         modelsSkillSpecificScarcity: false,
       },
+      references: [
+        {
+          id: "ba_entgeltatlas",
+          label: {
+            de: "Entgeltatlas der Bundesagentur für Arbeit",
+            en: "Federal Employment Agency remuneration atlas",
+          },
+          url: "https://web.arbeitsagentur.de/entgeltatlas/",
+          dataImported: false,
+          note: {
+            de: "Offizielle Referenz; keine Werte importiert.",
+            en: "Official reference; no values imported.",
+          },
+        },
+      ],
       assumptions: [
         {
           de: "Nur relative Szenarioeingaben.",

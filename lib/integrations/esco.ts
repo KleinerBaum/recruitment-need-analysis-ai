@@ -1,7 +1,8 @@
 import { z } from "zod";
 
 const DEFAULT_ESCO_API_BASE_URL = "https://ec.europa.eu/esco/api";
-const ESCO_VERSION = "v1.2.0";
+/** Current public ESCO release (10 December 2025). */
+export const ESCO_VERSION = "v1.2.1";
 const DEFAULT_TIMEOUT_MS = 8_000;
 const ESCO_URI_PATTERN = /^https?:\/\/data\.europa\.eu\/esco\/(occupation|skill)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
@@ -63,7 +64,7 @@ const EscoSearchResponseSchema = z
   .passthrough();
 
 /**
- * These UUIDs and labels are checked against ESCO v1.2.0. They are shown only
+ * These UUIDs and labels are checked against ESCO v1.2.1. They are shown only
  * when the live API cannot be reached and are never generated from user text.
  */
 const VERIFIED_FALLBACK_OCCUPATIONS = [

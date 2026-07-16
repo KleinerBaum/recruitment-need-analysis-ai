@@ -44,7 +44,11 @@ function renderEsco(data: ToolData): string {
 
 function renderScenario(data: ToolData): string {
   const rows = Array.isArray(data.whatIfRows) ? data.whatIfRows as Array<Record<string, unknown>> : [];
-  return `<span class="badge warning">SYNTHETIC · NOT MARKET DATA</span><h1>Relative reach scenario</h1><div class="reach"><strong>${escapeHtml(data.reachIndex)}</strong><span>/100</span></div><div class="meter"><i style="width:${escapeHtml(data.reachIndex)}%"></i></div><div class="list">${rows.map((row) => `<article><strong>${escapeHtml(row.addedSkill)}</strong><small>${escapeHtml(row.deltaPoints)} points · no candidate count claimed</small></article>`).join("")}</div>`;
+  const baselineReachIndex = Number(data.baselineReachIndex ?? 0);
+  const reachIndex = Number(data.reachIndex ?? 0);
+  const deltaPoints = Number(data.deltaPoints ?? 0);
+  const signedDelta = deltaPoints > 0 ? `+${deltaPoints}` : String(deltaPoints);
+  return `<span class="badge warning">SYNTHETIC · NOT MARKET DATA</span><h1>Relative reach scenario</h1><div class="reach"><strong>${escapeHtml(baselineReachIndex)} → ${escapeHtml(reachIndex)}</strong><span>/100 · ${escapeHtml(signedDelta)} points</span></div><div class="meter"><i style="width:${Math.max(0, Math.min(100, reachIndex))}%"></i></div><div class="list">${rows.map((row) => `<article><strong>${escapeHtml(row.addedSkill)}</strong><small>Reach ${escapeHtml(row.reachIndex)}/100 · ${escapeHtml(row.deltaPoints)} points from prior step</small></article>`).join("")}</div><p class="sub">Relative scenario only. Official BA references are provided separately; no salary or candidate data is imported.</p>`;
 }
 
 function render(data: ToolData | undefined) {

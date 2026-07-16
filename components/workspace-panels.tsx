@@ -54,12 +54,42 @@ export function SourceReview({ tr, jobAd, facts, onNext }: { tr: Translator; job
 }
 
 export function ClarifyPanel({
-  tr, analysis, question, questionIndex, answer, setAnswer, whyOpen, setWhyOpen, saveAnswer, updateFact, onNext
+  tr, analysis, question, questionIndex, answer, setAnswer, whyOpen, setWhyOpen, saveAnswer, answerLoading, updateFact, onNext
 }: {
   tr: Translator; analysis: Analysis; question?: Question; questionIndex: number; answer: string;
   setAnswer: Dispatch<SetStateAction<string>>; whyOpen: boolean; setWhyOpen: Dispatch<SetStateAction<boolean>>;
-  saveAnswer: (unresolved?: boolean) => void; updateFact: (id: string, value: string) => void; onNext: () => void;
+  saveAnswer: (kind?: "answer" | "declined" | "not_applicable") => void;
+  answerLoading: boolean;
+  updateFact: (id: Fact["id"], value: string) => void | Promise<void>;
+  onNext: () => void;
 }) {
+  const selectedOptionValues = new Set(
+    question?.answerType === "multi_select"
+      ? answer.split(/[,;\n]+/u).map((item) => item.trim()).filter(Boolean)
+      : answer ? [answer] : [],
+  );
+
+  function selectOption(value: string) {
+    if (question?.answerType !== "multi_select") {
+      setAnswer(value);
+      return;
+    }
+    const next = new Set(selectedOptionValues);
+    if (next.has(value)) {
+      next.delete(value);
+    } else if (value === "none") {
+      next.clear();
+      next.add(value);
+    } else {
+      next.delete("none");
+      next.add(value);
+    }
+    setAnswer([...next].join(", "));
+  }
+
+  const impact = question && question.priority >= 85
+    ? tr("HIGH IMPACT", "HOHE WIRKUNG")
+    : tr("NEXT PRIORITY", "NÄCHSTE PRIORITÄT");
   return <>
     <div className="section-heading">
       <div className="eyebrow"><Icon name="sparkles" />{tr("NEXT BEST QUESTION", "NÄCHSTE BESTE FRAGE")}</div>
@@ -67,15 +97,31 @@ export function ClarifyPanel({
       <p>{tr("Questions are ranked by impact and dependency—not generated as a generic checklist.", "Fragen werden nach Wirkung und Abhängigkeiten priorisiert – nicht als generische Checkliste erzeugt.")}</p>
     </div>
     {question ? <article className="question-card">
-      <div className="question-meta"><span>{String(questionIndex + 1).padStart(2, "0")}</span><div className="impact-badge"><i />HIGH IMPACT</div><small>{Math.max(0, analysis.questions.length - questionIndex - 1)} {tr("questions remaining", "Fragen verbleiben")}</small></div>
+      <div className="question-meta"><span>{String(questionIndex + 1).padStart(2, "0")}</span><div className="impact-badge"><i />{impact}</div><small>{analysis.questions.length} {tr("in the current adaptive batch", "im aktuellen adaptiven Fragenpaket")}</small></div>
       <h2>{question.text}</h2>
       {question.options?.length ? <div className="choice-grid">
-        {question.options.map((option) => <button key={option} className={answer === option ? "selected" : ""} onClick={() => setAnswer(option)}><span>{answer === option && <Icon name="check" />}</span>{option}</button>)}
-      </div> : <textarea className="answer-input" value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder={tr("Type a concise answer…", "Kurze Antwort eingeben…")} />}
+        {question.options.map((option) => {
+          const selected = selectedOptionValues.has(option.value);
+          return <button key={option.value} className={selected ? "selected" : ""} onClick={() => selectOption(option.value)}><span>{selected && <Icon name="check" />}</span>{option.label}</button>;
+        })}
+      </div> : question.answerType === "date" || question.answerType === "number" || question.answerType === "percentage"
+        ? <input
+            className="answer-input answer-single"
+            type={question.answerType === "date" ? "date" : "number"}
+            min={question.answerType === "percentage" ? 0 : undefined}
+            max={question.answerType === "percentage" ? 100 : undefined}
+            value={answer}
+            onChange={(event) => setAnswer(event.target.value)}
+          />
+        : <textarea className="answer-input" value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder={question.answerType === "multi_select" ? tr("Separate several entries with commas…", "Mehrere Einträge mit Kommas trennen…") : tr("Type a concise answer…", "Kurze Antwort eingeben…")} />}
       <button className="why-toggle" onClick={() => setWhyOpen((open) => !open)}><Icon name="evidence" />{tr("Why this question?", "Warum diese Frage?")}<Icon name="chevron" className={whyOpen ? "rotate" : ""} /></button>
       {whyOpen && <div className="why-panel"><p>{question.rationale}</p></div>}
-      <div className="question-actions"><button className="text-button" onClick={() => saveAnswer(true)}>{tr("Mark as unresolved", "Als ungeklärt markieren")}</button><button className="primary-button compact" disabled={!answer.trim()} onClick={() => saveAnswer()}>{tr("Save answer", "Antwort speichern")}<Icon name="arrow" /></button></div>
-    </article> : <button className="primary-button" onClick={onNext}>{tr("Continue to scenario", "Weiter zum Szenario")}<Icon name="arrow" /></button>}
+      <div className="question-actions">
+        <button className="text-button" disabled={answerLoading} onClick={() => saveAnswer("declined")}>{tr("Skip transparently", "Transparent überspringen")}</button>
+        {question.allowNotApplicable && <button className="text-button" disabled={answerLoading} onClick={() => saveAnswer("not_applicable")}>{tr("Not applicable", "Nicht anwendbar")}</button>}
+        <button className="primary-button compact" disabled={!answer.trim() || answerLoading} onClick={() => saveAnswer("answer")}>{answerLoading ? tr("Saving…", "Speichert…") : tr("Save & reprioritise", "Speichern & neu priorisieren")}<Icon name="arrow" /></button>
+      </div>
+    </article> : <div className="question-complete"><strong>{tr("Adaptive batch complete", "Adaptives Fragenpaket abgeschlossen")}</strong><p>{analysis.completeness.readyForSummary ? tr("The critical recruitment need is sufficiently documented.", "Der kritische Personalbedarf ist ausreichend dokumentiert.") : tr("No further applicable questions are open; unresolved critical fields remain visible in review.", "Keine weiteren anwendbaren Fragen sind offen; ungelöste kritische Felder bleiben in der Prüfung sichtbar.")}</p><button className="primary-button" onClick={onNext}>{tr("Continue to scenario", "Weiter zum Szenario")}<Icon name="arrow" /></button></div>}
     <FactsTable facts={analysis.facts} tr={tr} onUpdate={updateFact} />
   </>;
 }

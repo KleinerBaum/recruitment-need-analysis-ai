@@ -18,6 +18,18 @@ interface QuestionDefinition extends Omit<Question, "mode" | "status"> {
   critical: boolean;
 }
 
+type CatalogQuestionDefinition = Omit<QuestionDefinition, "allowNotApplicable">;
+
+const NOT_APPLICABLE_FIELD_IDS: ReadonlySet<VacancyFieldId> = new Set([
+  "company.context",
+  "role.travel",
+  "requirements.niceToHaveSkills",
+  "requirements.education",
+  "requirements.languages",
+  "requirements.certifications",
+  "compensation.benefits",
+]);
+
 const option = (value: string, de: string, en: string) => ({
   value,
   label: { de, en },
@@ -28,7 +40,7 @@ const answered = (fieldId: VacancyFieldId): QuestionDependency => ({
   operator: "is_answered",
 });
 
-export const QUESTION_CATALOG: readonly QuestionDefinition[] = [
+const QUESTION_DEFINITIONS: readonly CatalogQuestionDefinition[] = [
   {
     id: "q_company_name",
     fieldId: "company.name",
@@ -642,6 +654,22 @@ export const QUESTION_CATALOG: readonly QuestionDefinition[] = [
   },
 ] as const;
 
+/**
+ * Resolved field policy used by contracts, completeness, and mutations.
+ * Only genuinely optional fields can be completed by marking them not
+ * applicable. All critical fields and operational core fields default to false.
+ */
+export const QUESTION_CATALOG: readonly QuestionDefinition[] = QUESTION_DEFINITIONS.map(
+  (definition) => ({
+    ...definition,
+    allowNotApplicable: NOT_APPLICABLE_FIELD_IDS.has(definition.fieldId),
+  }),
+);
+
+const QUESTION_DEFINITION_BY_FIELD = new Map(
+  QUESTION_CATALOG.map((definition) => [definition.fieldId, definition]),
+);
+
 const FACT_STATUS_FACTOR: Readonly<Record<VacancyFact["status"], number>> = {
   missing: 0,
   explicit: 1,
@@ -657,6 +685,12 @@ function factMap(brief: VacancyBrief): Map<VacancyFieldId, VacancyFact> {
 }
 
 function isFactAnswered(fact: VacancyFact | undefined): boolean {
+  if (
+    fact?.status === "not_applicable" &&
+    !QUESTION_DEFINITION_BY_FIELD.get(fact.fieldId)?.allowNotApplicable
+  ) {
+    return false;
+  }
   return (
     fact !== undefined &&
     !fact.hasConflict &&
@@ -716,15 +750,21 @@ function definitionIsApplicable(
   );
 }
 
-function factCompleteness(fact: VacancyFact | undefined): number {
+function factCompleteness(
+  fact: VacancyFact | undefined,
+  definition: QuestionDefinition,
+): number {
   if (!fact || fact.hasConflict) {
     return 0;
   }
-  const statusFactor = FACT_STATUS_FACTOR[fact.status];
-  if (["explicit", "inferred"].includes(fact.status)) {
-    return statusFactor * fact.confidence;
+  if (fact.status === "not_applicable" && !definition.allowNotApplicable) {
+    return 0;
   }
-  return statusFactor;
+  // Model-authored confidence is not a calibrated probability. Completeness
+  // therefore depends on the evidence state only: an inferred proposal earns
+  // partial credit until a person confirms it, regardless of a model's
+  // self-reported confidence number.
+  return FACT_STATUS_FACTOR[fact.status];
 }
 
 function roundScore(value: number): number {
@@ -743,21 +783,27 @@ export function assessCompleteness(
     0,
   );
   const achievedWeight = applicableDefinitions.reduce((sum, definition) => {
-    return sum + definition.weight * factCompleteness(facts.get(definition.fieldId));
+    return sum + definition.weight * factCompleteness(
+      facts.get(definition.fieldId),
+      definition,
+    );
   }, 0);
 
   const missingFieldIds = applicableDefinitions
     .filter((definition) => {
       const fact = facts.get(definition.fieldId);
-      return fact === undefined || fact.status === "missing";
+      return fact === undefined ||
+        fact.status === "missing" ||
+        (fact.status === "not_applicable" && !definition.allowNotApplicable);
     })
     .map((definition) => definition.fieldId);
   const missingCriticalFieldIds = applicableDefinitions
-    .filter(
-      (definition) =>
-        definition.critical &&
-        factCompleteness(facts.get(definition.fieldId)) === 0,
-    )
+    .filter((definition) => {
+      const fact = facts.get(definition.fieldId);
+      return definition.critical && (
+        factCompleteness(fact, definition) === 0 || fact?.status === "declined"
+      );
+    })
     .map((definition) => definition.fieldId);
   const unconfirmedFieldIds = applicableDefinitions
     .filter((definition) => facts.get(definition.fieldId)?.status === "inferred")
@@ -780,7 +826,10 @@ export function assessCompleteness(
     );
     const sectionAchieved = definitions.reduce(
       (sum, definition) =>
-        sum + definition.weight * factCompleteness(facts.get(definition.fieldId)),
+        sum + definition.weight * factCompleteness(
+          facts.get(definition.fieldId),
+          definition,
+        ),
       0,
     );
     return {
@@ -854,6 +903,7 @@ function buildQuestion(
     options: definition.options,
     dependencies: definition.dependencies,
     priority,
+    allowNotApplicable: definition.allowNotApplicable,
     mode,
     status: "open",
     aggSafe: true,
@@ -884,6 +934,7 @@ export function selectNextQuestions(
       fact.status === "missing" ||
       fact.status === "inferred" ||
       fact.status === "conflict" ||
+      (fact.status === "not_applicable" && !definition.allowNotApplicable) ||
       fact.hasConflict;
     const dependenciesSatisfied = definition.dependencies.every((dependency) =>
       dependencyIsSatisfied(dependency, facts),
