@@ -11,7 +11,7 @@ fi
 
 npm run build
 
-entrypoint="dist/standalone/dist/server/index.js"
+entrypoint="dist/standalone/server.js"
 if [[ ! -f "$entrypoint" ]]; then
   echo "Missing vinext server entrypoint: $entrypoint" >&2
   exit 1
