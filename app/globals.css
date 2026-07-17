@@ -69,6 +69,21 @@ svg { width: 20px; height: 20px; }
 .textarea-wrap textarea { display: block; width: 100%; height: 190px; padding: 17px; border: 0; resize: vertical; outline: 0; background: transparent; color: var(--ink); font-size: 13px; line-height: 1.62; }
 .textarea-wrap textarea::placeholder { color: #9a9f9b; }
 .char-count { display: block; padding: 7px 13px 10px; text-align: right; color: #909792; font-size: 10px; }
+.source-options { margin-top: 13px; display: grid; gap: 9px; }
+.source-control { display: grid; gap: 6px; color: #747d77; font-size: 10px; font-weight: 820; letter-spacing: .07em; text-transform: uppercase; }
+.source-control > div { display: flex; gap: 7px; }
+.source-control input { min-width: 0; width: 100%; border: 1px solid #dfe0da; border-radius: 8px; padding: 9px 10px; background: #f8f8f4; color: var(--ink); font-size: 12px; font-weight: 500; letter-spacing: normal; text-transform: none; outline: none; }
+.source-control input:focus { border-color: var(--green-bright); box-shadow: 0 0 0 3px rgba(26,128,101,.09); }
+.source-control .outline-button { width: max-content; flex: 0 0 auto; padding: 8px 11px; font-size: 11px; letter-spacing: normal; text-transform: none; }
+.source-control > .outline-button { justify-content: center; width: 100%; }
+.source-control > .outline-button svg { width: 15px; height: 15px; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.esco-results { margin-top: 9px; display: grid; gap: 6px; }
+.esco-results button { border: 1px solid #dbe5d9; border-radius: 8px; padding: 9px 11px; background: #f3f8ef; display: flex; align-items: center; justify-content: space-between; gap: 12px; text-align: left; cursor: pointer; }
+.esco-results button:hover { border-color: var(--green); }
+.esco-results strong { font-size: 12px; }
+.esco-results span, .source-note { color: var(--green); font-size: 10px; font-weight: 700; }
+.source-note { margin: 9px 0 0; color: #795d36; line-height: 1.45; }
 .demo-picker { margin: 18px 0; }
 .demo-picker > span { display: block; margin-bottom: 9px; color: #747d77; font-size: 10px; font-weight: 820; letter-spacing: .1em; text-transform: uppercase; }
 .demo-list { display: flex; gap: 7px; overflow-x: auto; scrollbar-width: none; padding: 1px; }
@@ -439,6 +454,9 @@ svg { width: 20px; height: 20px; }
   .intake-card { padding: 18px; border-radius: 14px; }
   .intake-card-head p { margin-left: 0; }
   .textarea-wrap textarea { height: 175px; }
+  .source-control > div { align-items: stretch; flex-direction: column; }
+  .source-control .outline-button { width: 100%; justify-content: center; }
+  .esco-results button { align-items: flex-start; flex-direction: column; gap: 4px; }
   .process-strip { margin: 0 17px 28px; grid-template-columns: 1fr; }
   .process-strip > div { border-right: 0; border-bottom: 1px solid var(--line); }
   .process-strip > div:last-child { border-bottom: 0; }

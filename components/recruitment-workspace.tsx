@@ -30,6 +30,7 @@ type EscoSearchPayload = {
   warning?: string;
 };
 type ArtifactKind = "brief" | "interview" | "ad";
+type InputSource = { id: string; name?: string; type: "pasted_text" | "uploaded_file" | "source_url"; url?: string };
 export type Translator = (en: string, de: string) => string;
 
 const SENIORITY_VALUES = new Set<Seniority>(["entry", "junior", "mid", "senior", "lead", "executive"]);
@@ -271,6 +272,7 @@ export function RecruitmentWorkspace({ demoAds }: { demoAds: readonly DemoAd[] }
   const [locale, setLocale] = useState<Locale>("en");
   const localeRef = useRef<Locale>("en");
   const [jobAd, setJobAd] = useState("");
+  const [inputSource, setInputSource] = useState<InputSource>({ id: "job-ad", type: "pasted_text" });
   const [selectedDemo, setSelectedDemo] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const analysisRef = useRef<Analysis | null>(null);
@@ -530,6 +532,21 @@ export function RecruitmentWorkspace({ demoAds }: { demoAds: readonly DemoAd[] }
     localeRef.current = demo.language;
     setLocale(demo.language);
     setJobAd(demo.text);
+    setInputSource({ id: `demo-${demo.id}`, name: demo.title, type: "pasted_text" });
+    setAnalysisError(null);
+  }
+
+  function updateJobAd(value: string) {
+    setJobAd(value);
+    setSelectedDemo(null);
+    setInputSource({ id: "job-ad", type: "pasted_text" });
+    setAnalysisError(null);
+  }
+
+  function resolveInputSource(text: string, source: InputSource) {
+    setJobAd(text);
+    setInputSource(source);
+    setSelectedDemo(null);
     setAnalysisError(null);
   }
 
@@ -556,7 +573,14 @@ export function RecruitmentWorkspace({ demoAds }: { demoAds: readonly DemoAd[] }
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ jobAdText: jobAd, locale: analysisLocale }),
+        body: JSON.stringify({
+          jobAdText: jobAd,
+          locale: analysisLocale,
+          sourceId: inputSource.id,
+          ...(inputSource.name ? { sourceName: inputSource.name } : {}),
+          sourceType: inputSource.type,
+          ...(inputSource.url ? { sourceUrl: inputSource.url } : {}),
+        }),
       });
       const payload: unknown = await response.json();
       if (analysisGenerationRef.current !== generation) return;
@@ -823,6 +847,7 @@ export function RecruitmentWorkspace({ demoAds }: { demoAds: readonly DemoAd[] }
     setLoading(false);
     setAnswerLoading(false);
     setJobAd("");
+    setInputSource({ id: "job-ad", type: "pasted_text" });
     setSelectedDemo(null);
     setStep(1);
     setQuestionIndex(0);
@@ -860,7 +885,7 @@ export function RecruitmentWorkspace({ demoAds }: { demoAds: readonly DemoAd[] }
       </header>
 
       {!analysis ? (
-        <IntakePanel locale={locale} tr={tr} jobAd={jobAd} setJobAd={setJobAd} demoAds={demoAds} selectedDemo={selectedDemo} chooseDemo={chooseDemo} analyse={analyse} loading={loading} error={analysisError} />
+        <IntakePanel locale={locale} tr={tr} jobAd={jobAd} setJobAd={updateJobAd} resolveSource={resolveInputSource} demoAds={demoAds} selectedDemo={selectedDemo} chooseDemo={chooseDemo} analyse={analyse} loading={loading} error={analysisError} />
       ) : (
         <div className="workspace-shell">
           <WorkspaceNav tr={tr} title={analysis.title} completion={completion} step={step} setStep={setStep} mode={analysis.mode} />

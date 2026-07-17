@@ -151,6 +151,8 @@ function proposalToFact(
   proposal: ProposedVacancyFact,
   options: {
     sourceId: string;
+    sourceType: "pasted_text" | "uploaded_file" | "source_url";
+    sourceUrl?: string;
     sourceText: string;
     locale: "de" | "en";
     model: string | null;
@@ -178,9 +180,9 @@ function proposalToFact(
   const evidence = groundedProposalEvidence.map((item) => ({
     id: evidenceId(options.sourceId, proposal.fieldId, item.start, item.end),
     sourceId: options.sourceId,
-    sourceType: "pasted_text" as const,
+    sourceType: options.sourceType,
     quote: options.sourceText.slice(item.start, item.end),
-    locator: { start: item.start, end: item.end },
+    locator: { start: item.start, end: item.end, ...(options.sourceUrl ? { url: options.sourceUrl } : {}) },
     language: options.locale,
   }));
   const parsed = VacancyFactSchema.safeParse({
@@ -373,6 +375,8 @@ export async function POST(request: Request): Promise<NextResponse> {
   for (const proposal of extraction.proposedFacts) {
     const fact = proposalToFact(proposal, {
       sourceId: input.sourceId,
+      sourceType: input.sourceType,
+      ...(input.sourceUrl ? { sourceUrl: input.sourceUrl } : {}),
       sourceText,
       locale: input.locale,
       model: extraction.model,

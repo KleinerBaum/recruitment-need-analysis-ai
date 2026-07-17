@@ -411,6 +411,8 @@ export const AnalysisRequestSchema = z.strictObject({
   jobAdText: z.string().trim().min(20).max(100_000),
   sourceId: z.string().trim().min(1).max(160).default("job-ad"),
   sourceName: z.string().trim().min(1).max(300).optional(),
+  sourceType: z.enum(["pasted_text", "uploaded_file", "source_url"]).default("pasted_text"),
+  sourceUrl: z.string().url().max(2_000).optional(),
   existingBrief: VacancyBriefSchema.optional(),
   redactPersonalData: z.boolean().default(true),
 });
