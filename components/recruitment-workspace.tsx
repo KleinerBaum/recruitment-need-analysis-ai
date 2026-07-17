@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/icons";
 import { IntakePanel } from "@/components/intake-panel";
+import { KnowledgeIntelligence } from "@/components/knowledge-intelligence";
 import { ClarifyPanel, SourceReview, WorkspaceNav } from "@/components/workspace-panels";
 import { IntelligenceRail, ReviewPanel, ScenarioPanel } from "@/components/scenario-review";
 import { answerFromText, valuesForField } from "@/lib/client-analysis";
@@ -10,9 +11,15 @@ import { normalizeServerAnalysis } from "@/lib/client-normalize";
 import type { Analysis, Locale, ScenarioResult } from "@/lib/client-types";
 import {
   MarketScenarioResultSchema,
+  RecruitmentKnowledgeResponseSchema,
   type EscoConcept,
+  type EscoSkillCandidate,
   type JsonValue,
+  type KnowledgeSuggestion,
+  type RecruitmentKnowledgeRequest,
+  type RecruitmentKnowledgeResponse,
   type Seniority,
+  type VacancyAnswerAction,
   type VacancyFieldId,
 } from "@/lib/contracts";
 
@@ -110,7 +117,7 @@ function generatedArtifact(analysis: Analysis, artifact: ArtifactKind, tr: Trans
   ].join("\n");
 }
 
-function editorValue(fieldId: VacancyFieldId, value: string): JsonValue {
+function editorValue(fieldId: VacancyFieldId, value: string): string | number | string[] {
   const trimmed = value.trim();
   if (ARRAY_FIELDS.has(fieldId)) {
     return trimmed.split(/[\n,;]+/u).map((item) => item.trim()).filter(Boolean);
@@ -122,6 +129,101 @@ function editorValue(fieldId: VacancyFieldId, value: string): JsonValue {
 function roleTitleForEsco(analysis: Analysis | null): string {
   const value = analysis?.facts.find((fact) => fact.id === "role.title")?.rawValue;
   return typeof value === "string" ? value.replace(/\s+/gu, " ").trim() : "";
+}
+
+function regionForKnowledge(value: JsonValue): string {
+  if (typeof value !== "string") return "";
+  const segments = value
+    .replace(/\s+/gu, " ")
+    .split(/[,;|]/u)
+    .map((segment) => segment.trim())
+    .filter((segment) => (
+      segment.length > 0
+      && segment.length <= 80
+      && !/\d/u.test(segment)
+      && !/(?:avenue|road|street|strasse|straße|\bweg\b)/iu.test(segment)
+    ));
+  return segments.slice(-2).join(", ").slice(0, 160);
+}
+
+function companyLocationCodeForKnowledge(value: JsonValue): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const lastSegment = value
+    .split(/[,;|]/u)
+    .at(-1)
+    ?.replace(/[()]/gu, "")
+    .trim();
+  if (lastSegment && /^[A-Z]{2}$/u.test(lastSegment)) return lastSegment;
+  const normalized = value
+    .toLocaleLowerCase()
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    .replace(/[^\p{L}]+/gu, " ")
+    .trim();
+  const aliases: ReadonlyArray<readonly [RegExp, string]> = [
+    [/\b(?:deutschland|germany)\b/u, "DE"],
+    [/\b(?:osterreich|austria)\b/u, "AT"],
+    [/\b(?:schweiz|switzerland)\b/u, "CH"],
+    [/\b(?:vereinigtes konigreich|united kingdom|great britain)\b/u, "GB"],
+    [/\b(?:vereinigte staaten|united states|usa)\b/u, "US"],
+    [/\b(?:kanada|canada)\b/u, "CA"],
+    [/\b(?:spanien|spain)\b/u, "ES"],
+    [/\b(?:frankreich|france)\b/u, "FR"],
+    [/\b(?:niederlande|netherlands)\b/u, "NL"],
+  ];
+  return aliases.find(([pattern]) => pattern.test(normalized))?.[1];
+}
+
+function knowledgeRequestFor(
+  analysis: Analysis | null,
+  locale: Locale,
+): RecruitmentKnowledgeRequest | null {
+  if (!analysis) return null;
+  const roleTitle = roleTitleForEsco(analysis) || analysis.esco?.title || analysis.title.trim();
+  const seniorityValue = analysis.facts.find((fact) => fact.id === "role.seniority")?.rawValue;
+  const locationValue = analysis.facts.find((fact) => fact.id === "role.location")?.rawValue;
+  const region = regionForKnowledge(locationValue ?? null);
+  const companyLocationCode = companyLocationCodeForKnowledge(locationValue ?? null);
+  const skillsByKey = new Map<string, string>();
+  for (const skill of [
+    ...valuesForField(analysis.facts, "requirements.mustHaveSkills"),
+    ...valuesForField(analysis.facts, "requirements.niceToHaveSkills"),
+  ]) {
+    const normalized = skill.toLocaleLowerCase().trim();
+    if (normalized && !skillsByKey.has(normalized)) skillsByKey.set(normalized, skill.trim());
+  }
+  const currentSkills = [...skillsByKey.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, skill]) => skill)
+    .slice(0, 50);
+  const context = [
+    roleTitle ? `${locale === "de" ? "Rolle" : "Role"}: ${roleTitle}` : "",
+    analysis.esco
+      ? `ESCO: ${analysis.esco.title} · ${analysis.esco.uri}`
+      : "",
+    currentSkills.length > 0
+      ? `${locale === "de" ? "Dokumentierte Skills" : "Documented skills"}: ${currentSkills.join(", ")}`
+      : "",
+    typeof seniorityValue === "string"
+      ? `${locale === "de" ? "Seniorität" : "Seniority"}: ${seniorityValue}`
+      : "",
+    region ? `Region: ${region}` : "",
+  ].filter(Boolean).join("\n\n").slice(0, 4_000);
+
+  if (context.length < 3) return null;
+  return {
+    locale,
+    query: context,
+    ...(roleTitle ? { roleTitle } : {}),
+    ...(analysis.esco?.uri ? { occupationUri: analysis.esco.uri } : {}),
+    ...(typeof seniorityValue === "string" && SENIORITY_VALUES.has(seniorityValue as Seniority)
+      ? { seniority: seniorityValue as Seniority }
+      : {}),
+    ...(companyLocationCode ? { companyLocationCode } : {}),
+    currentSkills,
+    corpora: ["esco", "job_postings", "market_reference"],
+    maxResultsPerCorpus: 4,
+  };
 }
 
 function titlesMatch(left: string, right: string): boolean {
@@ -186,6 +288,13 @@ export function RecruitmentWorkspace({ demoAds }: { demoAds: readonly DemoAd[] }
   const [scenario, setScenario] = useState<ScenarioResult | null>(null);
   const [scenarioLoading, setScenarioLoading] = useState(false);
   const [scenarioError, setScenarioError] = useState<string | null>(null);
+  const [knowledge, setKnowledge] = useState<RecruitmentKnowledgeResponse | null>(null);
+  const [knowledgeSignature, setKnowledgeSignature] = useState<string | null>(null);
+  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
+  const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
+  const [knowledgeRefresh, setKnowledgeRefresh] = useState(0);
+  const [acceptingSuggestionId, setAcceptingSuggestionId] = useState<string | null>(null);
+  const knowledgeGenerationRef = useRef(0);
   const [searchRadiusKm, setSearchRadiusKm] = useState(50);
   const [remoteSharePercent, setRemoteSharePercent] = useState(0);
   const [seniority, setSeniority] = useState<Seniority>("mid");
@@ -226,6 +335,107 @@ export function RecruitmentWorkspace({ demoAds }: { demoAds: readonly DemoAd[] }
     [analysis, artifact, tr],
   );
   const artifactText = artifactDrafts[artifact] ?? defaultArtifactText;
+  const knowledgeRequestJson = useMemo(
+    () => {
+      const request = knowledgeRequestFor(analysis, locale);
+      return request ? JSON.stringify(request) : null;
+    },
+    [analysis, locale],
+  );
+  const visibleKnowledge = knowledgeSignature === knowledgeRequestJson ? knowledge : null;
+  const acceptedKnowledgeSkillIds = useMemo(() => {
+    const accepted = new Set<string>();
+    if (!visibleKnowledge || !analysis) return accepted;
+    for (const suggestion of visibleKnowledge.suggestions) {
+      if (suggestion.kind !== "esco_skill" || !suggestion.targetFieldId) continue;
+      if (
+        suggestion.targetFieldId !== "requirements.mustHaveSkills"
+        && suggestion.targetFieldId !== "requirements.niceToHaveSkills"
+      ) continue;
+      const values = valuesForField(analysis.facts, suggestion.targetFieldId);
+      if (values.some((value) => value.toLocaleLowerCase() === suggestion.label.toLocaleLowerCase())) {
+        accepted.add(suggestion.id);
+      }
+    }
+    return accepted;
+  }, [analysis, visibleKnowledge]);
+
+  useEffect(() => {
+    if (!knowledgeRequestJson) {
+      queueMicrotask(() => {
+        setKnowledge(null);
+        setKnowledgeSignature(null);
+        setKnowledgeLoading(false);
+        setKnowledgeError(null);
+      });
+      return;
+    }
+    const request = JSON.parse(knowledgeRequestJson) as RecruitmentKnowledgeRequest;
+    const controller = new AbortController();
+    const requestGeneration = knowledgeGenerationRef.current + 1;
+    knowledgeGenerationRef.current = requestGeneration;
+    const analysisGeneration = analysisGenerationRef.current;
+    const activeLocale = request.locale;
+    let active = true;
+    queueMicrotask(() => {
+      if (!active || controller.signal.aborted) return;
+      setKnowledge(null);
+      setKnowledgeSignature(null);
+      setKnowledgeLoading(true);
+      setKnowledgeError(null);
+    });
+
+    const debounce = window.setTimeout(() => {
+      fetch("/api/knowledge/enrich", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        signal: controller.signal,
+        body: knowledgeRequestJson,
+      })
+      .then(async (response) => {
+        const payload: unknown = await response.json();
+        const parsed = RecruitmentKnowledgeResponseSchema.safeParse(payload);
+        if (!response.ok || !parsed.success) throw new Error("invalid_knowledge_response");
+        return parsed.data;
+      })
+      .then((payload) => {
+        if (
+          !active
+          || controller.signal.aborted
+          || knowledgeGenerationRef.current !== requestGeneration
+          || analysisGenerationRef.current !== analysisGeneration
+        ) return;
+        setKnowledge(payload);
+        setKnowledgeSignature(knowledgeRequestJson);
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        if (
+          !active
+          || controller.signal.aborted
+          || knowledgeGenerationRef.current !== requestGeneration
+          || analysisGenerationRef.current !== analysisGeneration
+        ) return;
+        setKnowledgeError(activeLocale === "de"
+          ? "Die Wissensquellen konnten vorübergehend nicht abgerufen werden. Das Briefing bleibt unverändert."
+          : "Knowledge sources could not be retrieved temporarily. The brief remains unchanged.");
+      })
+      .finally(() => {
+        if (
+          active
+          && !controller.signal.aborted
+          && knowledgeGenerationRef.current === requestGeneration
+          && analysisGenerationRef.current === analysisGeneration
+        ) setKnowledgeLoading(false);
+      });
+    }, 450);
+
+    return () => {
+      active = false;
+      window.clearTimeout(debounce);
+      controller.abort();
+    };
+  }, [knowledgeRefresh, knowledgeRequestJson]);
 
   useEffect(() => {
     let active = true;
@@ -358,6 +568,10 @@ export function RecruitmentWorkspace({ demoAds }: { demoAds: readonly DemoAd[] }
       setStep(1);
       setQuestionIndex(0);
       setSelectedSkills([]);
+      setKnowledge(null);
+      setKnowledgeSignature(null);
+      setKnowledgeError(null);
+      setAcceptingSuggestionId(null);
       setArtifactDrafts({});
       escoCandidateTitleRef.current = null;
       const remoteValue = normalized.facts.find((fact) => fact.id === "role.remoteShare")?.rawValue;
@@ -441,6 +655,16 @@ export function RecruitmentWorkspace({ demoAds }: { demoAds: readonly DemoAd[] }
   }
 
   function updateFact(id: VacancyFieldId, value: string): Promise<void> {
+    return editFact(id, value.trim()
+      ? { kind: "answer", value: editorValue(id, value) }
+      : { kind: "declined" });
+  }
+
+  function editFact(
+    id: VacancyFieldId,
+    action: VacancyAnswerAction,
+    escoCandidate?: EscoSkillCandidate,
+  ): Promise<void> {
     const generation = analysisGenerationRef.current;
     const queuedMutation = briefMutationQueueRef.current.then(async () => {
       let current = analysisRef.current;
@@ -449,15 +673,14 @@ export function RecruitmentWorkspace({ demoAds }: { demoAds: readonly DemoAd[] }
 
       try {
         for (let attempt = 0; attempt < 2; attempt += 1) {
-          const response = await fetch("/api/facts", {
-            method: "PATCH",
+          const response = await fetch(escoCandidate ? "/api/esco/accept-skill" : "/api/facts", {
+            method: escoCandidate ? "POST" : "PATCH",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
               brief: current.brief,
               fieldId: id,
-              action: value.trim()
-                ? { kind: "answer", value: editorValue(id, value) }
-                : { kind: "declined" },
+              action,
+              ...(escoCandidate ? { escoCandidate } : {}),
             }),
           });
           const payload: unknown = await response.json();
@@ -490,6 +713,62 @@ export function RecruitmentWorkspace({ demoAds }: { demoAds: readonly DemoAd[] }
 
     briefMutationQueueRef.current = queuedMutation.catch(() => undefined);
     return queuedMutation;
+  }
+
+  async function acceptKnowledgeSkill(suggestion: KnowledgeSuggestion) {
+    if (
+      suggestion.kind !== "esco_skill"
+      || (
+        suggestion.targetFieldId !== "requirements.mustHaveSkills"
+        && suggestion.targetFieldId !== "requirements.niceToHaveSkills"
+      )
+      || knowledgeLoading
+      || knowledgeSignature !== knowledgeRequestJson
+      || !visibleKnowledge?.suggestions.some((current) => current.id === suggestion.id)
+      || acceptingSuggestionId
+    ) return;
+
+    const generation = analysisGenerationRef.current;
+    const targetFieldId = suggestion.targetFieldId;
+    const current = analysisRef.current;
+    if (!current) return;
+    const existingValues = valuesForField(current.facts, targetFieldId);
+    if (existingValues.some((value) => value.toLocaleLowerCase() === suggestion.label.toLocaleLowerCase())) return;
+    const primaryOccupation = current.brief.esco.primaryOccupation;
+    const escoCandidate: EscoSkillCandidate | undefined =
+      suggestion.sourceAuthority === "official_esco_api"
+      && suggestion.conceptUri
+      && suggestion.relation
+      && primaryOccupation
+        ? {
+          authority: "official_esco_api",
+          occupationUri: primaryOccupation.uri,
+          skillUri: suggestion.conceptUri,
+          relation: suggestion.relation,
+          version: primaryOccupation.version,
+          language: current.brief.locale,
+          label: suggestion.label,
+        }
+        : undefined;
+    if (suggestion.sourceAuthority === "official_esco_api" && !escoCandidate) return;
+
+    setAcceptingSuggestionId(suggestion.id);
+    try {
+      await editFact(targetFieldId, {
+        kind: "answer",
+        value: [...existingValues, suggestion.label],
+      }, escoCandidate);
+    } finally {
+      if (analysisGenerationRef.current === generation) setAcceptingSuggestionId(null);
+    }
+  }
+
+  function refreshKnowledge() {
+    setKnowledge(null);
+    setKnowledgeSignature(null);
+    setKnowledgeLoading(true);
+    setKnowledgeError(null);
+    setKnowledgeRefresh((current) => current + 1);
   }
 
   function confirmEsco(candidate: EscoConcept) {
@@ -538,6 +817,7 @@ export function RecruitmentWorkspace({ demoAds }: { demoAds: readonly DemoAd[] }
 
   function reset() {
     analysisGenerationRef.current += 1;
+    knowledgeGenerationRef.current += 1;
     analysisRef.current = null;
     setAnalysis(null);
     setLoading(false);
@@ -550,6 +830,12 @@ export function RecruitmentWorkspace({ demoAds }: { demoAds: readonly DemoAd[] }
     setScenario(null);
     setScenarioLoading(false);
     setScenarioError(null);
+    setKnowledge(null);
+    setKnowledgeSignature(null);
+    setKnowledgeLoading(false);
+    setKnowledgeError(null);
+    setKnowledgeRefresh(0);
+    setAcceptingSuggestionId(null);
     setEscoCandidates([]);
     setEscoWarning(null);
     escoCandidateTitleRef.current = null;
@@ -585,7 +871,19 @@ export function RecruitmentWorkspace({ demoAds }: { demoAds: readonly DemoAd[] }
             {answerError && <p className="inline-error" role="alert">{answerError}</p>}
             {step === 1 && <SourceReview tr={tr} jobAd={jobAd} facts={facts} onNext={() => setStep(2)} />}
             {step === 2 && <ClarifyPanel tr={tr} analysis={analysis} question={question} questionIndex={questionIndex} answer={answer} setAnswer={setAnswer} whyOpen={whyOpen} setWhyOpen={setWhyOpen} saveAnswer={saveAnswer} answerLoading={answerLoading} updateFact={updateFact} onNext={() => setStep(3)} />}
-            {step === 3 && <ScenarioPanel tr={tr} skills={skills} selected={selectedSkills} setSelected={setSelectedSkills} scenario={scenario} loading={scenarioLoading} error={scenarioError} searchRadiusKm={searchRadiusKm} setSearchRadiusKm={setSearchRadiusKm} remoteSharePercent={remoteSharePercent} setRemoteSharePercent={setRemoteSharePercent} seniority={seniority} setSeniority={setSeniority} onNext={() => setStep(4)} />}
+            {step === 3 && <>
+              <KnowledgeIntelligence
+                tr={tr}
+                data={visibleKnowledge}
+                loading={knowledgeLoading}
+                error={knowledgeError}
+                acceptingSuggestionId={acceptingSuggestionId}
+                acceptedSkillIds={acceptedKnowledgeSkillIds}
+                onRetry={refreshKnowledge}
+                onAcceptSkill={acceptKnowledgeSkill}
+              />
+              <ScenarioPanel tr={tr} skills={skills} selected={selectedSkills} setSelected={setSelectedSkills} scenario={scenario} loading={scenarioLoading} error={scenarioError} searchRadiusKm={searchRadiusKm} setSearchRadiusKm={setSearchRadiusKm} remoteSharePercent={remoteSharePercent} setRemoteSharePercent={setRemoteSharePercent} seniority={seniority} setSeniority={setSeniority} onNext={() => setStep(4)} />
+            </>}
             {step === 4 && <ReviewPanel tr={tr} analysis={analysis} updateFact={updateFact} artifact={artifact} setArtifact={setArtifact} artifactText={artifactText} setArtifactText={(value) => setArtifactDrafts((current) => ({ ...current, [artifact]: value }))} copied={copied} copyArtifact={copyArtifact} />}
           </section>
           <IntelligenceRail tr={tr} analysis={analysis} scenario={scenario} escoCandidates={escoCandidates} escoWarning={escoWarning} confirmEsco={confirmEsco} />

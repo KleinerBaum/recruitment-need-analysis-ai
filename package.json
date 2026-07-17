@@ -18,6 +18,8 @@
     "test:watch": "vitest",
     "widget:build": "node scripts/build-widget.mjs",
     "mcp": "tsx mcp/stdio.ts",
+    "sources:check": "node --env-file=.env.local scripts/diagnose-source-readiness.mjs",
+    "sources:esco:prepare": "node scripts/prepare-esco-relation-shards.mjs",
     "sites:archive": "bash scripts/package-sites-archive.sh",
     "check": "npm run lint && npm run typecheck && npm run test && npm run build"
   },

@@ -16,6 +16,10 @@ import {
   extractProposedVacancyFacts,
   type ProposedVacancyFact,
 } from "@/lib/integrations/openai";
+import {
+  EscoProvenanceError,
+  assertValidBriefEscoProvenance,
+} from "@/lib/server/esco-provenance";
 
 export const runtime = "nodejs";
 
@@ -310,6 +314,23 @@ export async function POST(request: Request): Promise<NextResponse> {
     return errorResponse(400, "invalid_request", "The analysis request is invalid.");
   }
   const input = parsedRequest.data;
+  if (input.existingBrief && input.existingBrief.locale !== input.locale) {
+    return errorResponse(
+      400,
+      "brief_locale_mismatch",
+      "The existing brief locale must match the requested analysis locale.",
+    );
+  }
+  if (input.existingBrief) {
+    try {
+      assertValidBriefEscoProvenance(input.existingBrief);
+    } catch (error) {
+      if (error instanceof EscoProvenanceError) {
+        return errorResponse(error.status, error.code, error.message, error.retryable);
+      }
+      return errorResponse(400, "invalid_esco_attestation", "The ESCO provenance is invalid.");
+    }
+  }
   const recordedAt = new Date().toISOString();
   const warnings: LocalizedText[] = [];
   const sourceText = input.redactPersonalData
