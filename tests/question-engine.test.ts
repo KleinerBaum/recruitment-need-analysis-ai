@@ -125,6 +125,31 @@ describe("deterministic completeness", () => {
     expect(assessment.readyForSummary).toBe(false);
   });
 
+  it("does not give critical fields credit for a forged not-applicable status", () => {
+    const invalidBrief = brief([
+      userFact("role.title", null, { status: "not_applicable" }),
+    ]);
+    const assessment = assessCompleteness(invalidBrief);
+    const questions = selectNextQuestions(invalidBrief);
+
+    expect(assessment.missingFieldIds).toContain("role.title");
+    expect(assessment.missingCriticalFieldIds).toContain("role.title");
+    expect(assessment.readyForSummary).toBe(false);
+    expect(questions[0]).toMatchObject({
+      fieldId: "role.title",
+      allowNotApplicable: false,
+    });
+  });
+
+  it("keeps a declined critical field as a readiness blocker", () => {
+    const assessment = assessCompleteness(brief([
+      userFact("role.title", null, { status: "declined" }),
+    ]));
+
+    expect(assessment.missingCriticalFieldIds).toContain("role.title");
+    expect(assessment.readyForSummary).toBe(false);
+  });
+
   it("treats an explicit missing-status fact as a missing field", () => {
     const assessment = assessCompleteness(
       brief([
@@ -233,7 +258,23 @@ describe("adaptive question selection", () => {
       expect(definition.rationale.de.trim()).not.toBe("");
       expect(definition.rationale.en.trim()).not.toBe("");
       expect(definition.aggSafe).toBe(true);
+      if (definition.critical) {
+        expect(definition.allowNotApplicable).toBe(false);
+      }
     }
+    expect(
+      QUESTION_CATALOG
+        .filter((definition) => definition.allowNotApplicable)
+        .map((definition) => definition.fieldId),
+    ).toEqual([
+      "company.context",
+      "role.travel",
+      "requirements.niceToHaveSkills",
+      "requirements.education",
+      "requirements.languages",
+      "requirements.certifications",
+      "compensation.benefits",
+    ]);
 
     const [question] = selectNextQuestions(brief());
     expect(question).toBeDefined();

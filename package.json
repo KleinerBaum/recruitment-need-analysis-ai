@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev": "vinext dev",
-    "build": "vinext build",
+    "build": "vinext build && node scripts/copy-hosting-metadata.mjs",
     "start": "vinext start",
     "dev:next": "next dev",
     "build:next": "next build",

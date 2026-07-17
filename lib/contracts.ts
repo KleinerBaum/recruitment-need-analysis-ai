@@ -268,6 +268,7 @@ export const QuestionSchema = z.strictObject({
   options: z.array(QuestionOptionSchema).max(20).default([]),
   dependencies: z.array(QuestionDependencySchema).max(10).default([]),
   priority: z.number().int().min(0).max(100),
+  allowNotApplicable: z.boolean(),
   mode: z.enum(["collect", "confirm", "resolve_conflict"]),
   status: z.enum(["open", "answered", "skipped", "blocked"]),
   aggSafe: z.literal(true),
@@ -366,6 +367,46 @@ export const AnalysisResponseSchema = z.strictObject({
 });
 export type AnalysisResponse = z.infer<typeof AnalysisResponseSchema>;
 
+export const VacancyAnswerValueSchema = z.union([
+  z.string().trim().min(1).max(4_000),
+  z.number().finite(),
+  z.array(z.string().trim().min(1).max(300)).min(1).max(50),
+]);
+export type VacancyAnswerValue = z.infer<typeof VacancyAnswerValueSchema>;
+
+export const VacancyAnswerActionSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("answer"),
+    value: VacancyAnswerValueSchema,
+  }),
+  z.strictObject({ kind: z.literal("declined") }),
+  z.strictObject({ kind: z.literal("not_applicable") }),
+]);
+export type VacancyAnswerAction = z.infer<typeof VacancyAnswerActionSchema>;
+
+/**
+ * Submit one answer against the exact question batch produced for this brief
+ * revision. `fieldId` is deliberately repeated so stale or mismatched clients
+ * cannot write a value to a different canonical field.
+ */
+export const AnswerVacancyQuestionRequestSchema = z.strictObject({
+  brief: VacancyBriefSchema,
+  questionId: z.string().trim().min(1).max(160),
+  fieldId: VacancyFieldIdSchema,
+  action: VacancyAnswerActionSchema,
+});
+export type AnswerVacancyQuestionRequest = z.infer<
+  typeof AnswerVacancyQuestionRequestSchema
+>;
+
+/** Edit one canonical fact from the final review without bypassing its field contract. */
+export const EditVacancyFactRequestSchema = z.strictObject({
+  brief: VacancyBriefSchema,
+  fieldId: VacancyFieldIdSchema,
+  action: VacancyAnswerActionSchema,
+});
+export type EditVacancyFactRequest = z.infer<typeof EditVacancyFactRequestSchema>;
+
 export const SenioritySchema = z.enum([
   "entry",
   "junior",
@@ -391,7 +432,7 @@ export type MarketScenarioRequest = z.infer<typeof MarketScenarioRequestSchema>;
 
 export const MarketScenarioWhatIfSchema = z.strictObject({
   addedSkill: z.string().trim().min(1).max(300),
-  resultingMustHaveSkillCount: z.number().int().min(1).max(51),
+  resultingMustHaveSkillCount: z.number().int().min(1).max(100),
   reachIndex: z.number().min(0).max(100),
   deltaPoints: z.number().max(0),
   explanation: LocalizedTextSchema,
@@ -401,7 +442,7 @@ export type MarketScenarioWhatIf = z.infer<
 >;
 
 export const MarketScenarioProvenanceSchema = z.strictObject({
-  methodId: z.literal("synthetic_candidate_reach_v1"),
+  methodId: z.literal("synthetic_candidate_reach_v2"),
   dataBasis: z.literal("scenario_inputs_only"),
   formula: z.string().trim().min(1).max(1_000),
   usesLiveCandidateData: z.literal(false),
@@ -414,13 +455,25 @@ export type MarketScenarioProvenance = z.infer<
   typeof MarketScenarioProvenanceSchema
 >;
 
+export const MarketReferenceSchema = z.strictObject({
+  id: z.enum(["ba_entgeltatlas", "ba_labour_market_statistics"]),
+  label: LocalizedTextSchema,
+  url: z.string().url(),
+  dataImported: z.literal(false),
+  note: LocalizedTextSchema,
+});
+export type MarketReference = z.infer<typeof MarketReferenceSchema>;
+
 export const MarketScenarioResultSchema = z.strictObject({
   status: z.literal("synthetic_scenario_only"),
   metric: z.literal("synthetic_scenario_reach_index"),
   unit: z.literal("relative_points_0_to_100"),
+  baselineReachIndex: z.number().min(0).max(100),
   reachIndex: z.number().min(0).max(100),
+  deltaPoints: z.number().max(0),
   whatIfRows: z.array(MarketScenarioWhatIfSchema).max(50),
   provenance: MarketScenarioProvenanceSchema,
+  references: z.array(MarketReferenceSchema).min(1).max(5),
   assumptions: z.array(LocalizedTextSchema).min(1).max(50),
   disclaimer: LocalizedTextSchema,
 });

@@ -381,7 +381,7 @@ describe("ESCO integration", () => {
       source: "official_esco_api",
     });
     const requestedUrl = String(fetchImpl.mock.calls[0]?.[0]);
-    expect(requestedUrl).toContain("selectedVersion=v1.2.0");
+    expect(requestedUrl).toContain("selectedVersion=v1.2.1");
     expect(requestedUrl).toContain("type=occupation");
   });
 

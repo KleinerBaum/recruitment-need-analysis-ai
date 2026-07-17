@@ -1,130 +1,83 @@
-import { clientFieldIds, clientLabels, deterministicAnalysis, questionsFor } from "@/lib/client-analysis";
+import { AnalysisResponseSchema, VACANCY_FIELD_IDS, type VacancyFact } from "@/lib/contracts";
+import { fieldLabel, valueAsText } from "@/lib/client-analysis";
 import type { Analysis, Fact, FactStatus, Locale } from "@/lib/client-types";
 
-const canonicalToClient: Record<string, string> = {
-  "role.title": "role_title",
-  "role.purpose": "purpose",
-  "tasks.outcomes": "responsibilities",
-  "tasks.responsibilities": "responsibilities",
-  "role.seniority": "seniority",
-  "requirements.mustHaveSkills": "skills",
-  "role.location": "location",
-  "role.workModel": "work_model",
-  "role.remoteShare": "work_model",
-  "role.employmentType": "employment",
-  "role.workingHours": "employment",
-  "compensation.salaryRange": "salary",
-  "role.leadershipScope": "leadership",
-  "requirements.languages": "languages",
-  "process.interviewStages": "process"
-};
-
-function uiFieldId(value: unknown): string {
-  const id = String(value ?? "");
-  return canonicalToClient[id] ?? id;
+function localized(value: { de: string; en: string }, locale: Locale): string {
+  return value[locale];
 }
 
-function fieldLabel(id: string, locale: Locale): string {
-  const known = clientLabels[locale][id];
-  if (known) return known;
-  const leaf = id.split(".").at(-1) ?? id;
-  return leaf.replace(/([a-z])([A-Z])/gu, "$1 $2").replace(/^./u, (letter) => letter.toUpperCase());
+function uiStatus(fact: VacancyFact | undefined): FactStatus {
+  if (!fact || fact.status === "missing") return "missing";
+  if (fact.status === "conflict" || fact.hasConflict) return "conflict";
+  if (fact.status === "user_confirmed") return "confirmed";
+  if (fact.status === "not_applicable") return "not_applicable";
+  if (fact.status === "declined") return "declined";
+  return "proposed";
 }
 
-function asText(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (typeof value === "number") return String(value);
-  if (Array.isArray(value)) return value.map(asText).filter(Boolean).join(", ");
-  if (value && typeof value === "object" && "value" in value) {
-    return asText((value as { value: unknown }).value);
-  }
-  return "";
-}
-
-function localized(value: unknown, locale: Locale): string {
-  if (typeof value === "string") return value;
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return asText(record[locale] ?? record.en ?? record.de ?? record.value);
-  }
-  return asText(value);
-}
-
-export function normalizeServerAnalysis(raw: unknown, source: string, locale: Locale): Analysis {
-  const base = deterministicAnalysis(source, locale);
-  if (!raw || typeof raw !== "object") return base;
-  const payload = raw as Record<string, unknown>;
-  const brief = payload.brief && typeof payload.brief === "object"
-    ? payload.brief as Record<string, unknown>
-    : payload;
-  const inputFacts = Array.isArray(brief.facts)
-    ? brief.facts as Array<Record<string, unknown>>
-    : [];
-  const apiFacts = inputFacts.map((item, index): Fact => {
-    const id = uiFieldId(item.fieldId ?? item.field_id ?? item.id ?? clientFieldIds[index] ?? "");
-    const value = asText(item.value);
-    const rawStatus = String(item.status ?? (value ? "proposed" : "missing"));
-    const status: FactStatus = rawStatus === "user_confirmed" || rawStatus === "confirmed"
-      ? "confirmed"
-      : rawStatus === "conflict"
-        ? "conflict"
-        : ["explicit", "inferred", "proposed"].includes(rawStatus)
-          ? "proposed"
-          : "missing";
-    const evidenceItem = Array.isArray(item.evidence) ? item.evidence[0] : item.evidence;
-    const evidenceObject = evidenceItem && typeof evidenceItem === "object"
-      ? evidenceItem as Record<string, unknown>
-      : undefined;
+export function normalizeServerAnalysis(raw: unknown, locale: Locale): Analysis | null {
+  const parsed = AnalysisResponseSchema.safeParse(raw);
+  if (!parsed.success) return null;
+  const payload = parsed.data;
+  const canonicalFacts = new Map(payload.brief.facts.map((fact) => [fact.fieldId, fact]));
+  const facts: Fact[] = VACANCY_FIELD_IDS.map((fieldId) => {
+    const canonical = canonicalFacts.get(fieldId);
     return {
-      id,
-      label: fieldLabel(id, locale),
-      value,
-      status,
-      confidence: typeof item.confidence === "number" ? item.confidence : undefined,
-      evidence: asText(evidenceObject?.quote ?? evidenceItem)
+      id: fieldId,
+      label: fieldLabel(fieldId, locale),
+      value: valueAsText(canonical?.value ?? null),
+      rawValue: canonical?.value ?? null,
+      status: uiStatus(canonical),
+      canonicalStatus: canonical?.status ?? "missing",
+      ...(canonical ? { confidence: canonical.confidence } : {}),
+      evidence: canonical?.evidence ?? [],
+      ...(canonical ? { provenance: canonical.provenance } : {}),
+      ...(canonical?.conflictDescription
+        ? { conflictDescription: localized(canonical.conflictDescription, locale) }
+        : {}),
     };
-  }).filter((fact) => fact.id);
-  const facts = base.facts.map((fact) => apiFacts.find((candidate) => candidate.id === fact.id) ?? fact);
-  for (const fact of apiFacts) {
-    if (!facts.some((current) => current.id === fact.id)) facts.push(fact);
-  }
-
-  const questionPayload = payload.nextQuestions ?? payload.questions;
-  const rawQuestions = Array.isArray(questionPayload)
-    ? questionPayload as Array<Record<string, unknown>>
-    : [];
-  const questions = rawQuestions.map((item, index) => ({
-    id: String(item.id ?? `api-${index}`),
-    factId: uiFieldId(item.fieldId ?? item.field_id ?? item.factId ?? ""),
-    text: localized(item.wording ?? item.text ?? item.prompt ?? item.title, locale),
-    rationale: localized(item.rationale ?? item.why, locale),
-    options: Array.isArray(item.options)
-      ? item.options.map((option) => localized(option && typeof option === "object" ? (option as Record<string, unknown>).label ?? option : option, locale))
-      : undefined
-  })).filter((item) => item.factId && item.text);
-  for (const question of questions) {
-    if (!facts.some((fact) => fact.id === question.factId)) {
-      facts.push({ id: question.factId, label: fieldLabel(question.factId, locale), value: "", status: "missing" });
-    }
-  }
-
-  const briefEsco = brief.esco && typeof brief.esco === "object" ? brief.esco as Record<string, unknown> : undefined;
-  const rawEsco = (Array.isArray(payload.escoSuggestions)
-    ? payload.escoSuggestions[0]
-    : payload.esco ?? briefEsco?.primaryOccupation) as Record<string, unknown> | undefined;
-  const esco = rawEsco && asText(rawEsco.uri) ? {
-    title: asText(rawEsco.preferredLabel ?? rawEsco.label ?? rawEsco.title),
-    uri: asText(rawEsco.uri),
-    confidence: typeof rawEsco.confidence === "number" ? rawEsco.confidence : null,
-    skills: Array.isArray(rawEsco.skills) ? rawEsco.skills.map(asText) : []
-  } : base.esco;
+  });
+  const questions = payload.nextQuestions.map((question) => ({
+    id: question.id,
+    factId: question.fieldId,
+    text: localized(question.wording, locale),
+    rationale: localized(question.rationale, locale),
+    answerType: question.answerType,
+    mode: question.mode,
+    priority: question.priority,
+    allowNotApplicable: question.allowNotApplicable,
+    options: question.options.map((option) => ({
+      value: option.value,
+      label: localized(option.label, locale),
+    })),
+  }));
+  const titleFact = canonicalFacts.get("role.title");
+  const title = payload.brief.title
+    ?? (typeof titleFact?.value === "string" ? titleFact.value : undefined)
+    ?? (locale === "de" ? "Unbenannte Vakanz" : "Untitled vacancy");
+  const documented = facts.filter((fact) => fact.status !== "missing" && fact.status !== "declined").length;
+  const escoOccupation = payload.brief.esco.primaryOccupation;
+  const usesAi = payload.brief.facts.some((fact) => fact.provenance.method === "structured_extraction");
 
   return {
-    title: asText(brief.title) || base.title,
-    summary: asText(payload.summary) || base.summary,
+    analysisId: payload.analysisId,
+    status: payload.status,
+    title,
+    summary: locale === "de"
+      ? `${documented} von ${facts.length} Feldern dokumentiert · ${payload.completeness.score.toFixed(0)} % gewichtete Vollständigkeit.`
+      : `${documented} of ${facts.length} fields documented · ${payload.completeness.score.toFixed(0)}% weighted completeness.`,
     facts,
-    questions: questions.length ? questions : questionsFor(facts, locale),
-    esco,
-    mode: apiFacts.length > 0 ? "ai" : "deterministic"
+    questions,
+    canonicalQuestions: payload.nextQuestions,
+    esco: escoOccupation ? {
+      title: escoOccupation.preferredLabel,
+      uri: escoOccupation.uri,
+      version: escoOccupation.version,
+      skills: payload.brief.esco.skills.map((skill) => skill.preferredLabel),
+    } : null,
+    mode: usesAi ? "ai" : "deterministic",
+    brief: payload.brief,
+    completeness: payload.completeness,
+    warnings: payload.warnings,
   };
 }

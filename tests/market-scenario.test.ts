@@ -27,8 +27,14 @@ describe("synthetic market scenario", () => {
       usesLlm: false,
       modelsSkillSpecificScarcity: false,
     });
+    expect(result.baselineReachIndex).toBe(70);
+    expect(result.reachIndex).toBe(62);
+    expect(result.deltaPoints).toBe(-8);
     expect(result.whatIfRows.map((row) => row.deltaPoints)).toEqual([-4, -4]);
-    expect(result.whatIfRows.every((row) => row.reachIndex <= result.reachIndex)).toBe(true);
+    expect(result.whatIfRows.map((row) => row.reachIndex)).toEqual([66, 62]);
+    expect(result.whatIfRows.every((row) => row.reachIndex <= result.baselineReachIndex)).toBe(true);
+    expect(result.whatIfRows.at(-1)?.reachIndex).toBe(result.reachIndex);
+    expect(result.references.every((reference) => reference.dataImported === false)).toBe(true);
 
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain("candidateCount");

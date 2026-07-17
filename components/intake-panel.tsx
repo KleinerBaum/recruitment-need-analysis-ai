@@ -5,7 +5,7 @@ import type { Locale } from "@/lib/client-types";
 type DemoAd = { id: string; title: string; language: Locale; location: string; text: string };
 
 export function IntakePanel({
-  locale, tr, jobAd, setJobAd, demoAds, selectedDemo, chooseDemo, analyse, loading
+  locale, tr, jobAd, setJobAd, demoAds, selectedDemo, chooseDemo, analyse, loading, error
 }: {
   locale: Locale;
   tr: Translator;
@@ -16,6 +16,7 @@ export function IntakePanel({
   chooseDemo: (id: string) => void;
   analyse: () => void;
   loading: boolean;
+  error: string | null;
 }) {
   return <>
     <section className="hero">
@@ -47,6 +48,7 @@ export function IntakePanel({
         </div>
         <div className={`textarea-wrap ${jobAd ? "has-content" : ""}`}>
           <textarea
+            aria-label={tr("Complete job advertisement", "Vollständige Stellenanzeige")}
             value={jobAd}
             onChange={(event) => setJobAd(event.target.value)}
             placeholder={tr("Paste the complete job advertisement here…", "Vollständige Stellenanzeige hier einfügen…")}
@@ -69,7 +71,8 @@ export function IntakePanel({
             ? <><span className="spinner" />{tr("Building your evidence map…", "Evidenzkarte wird erstellt…")}</>
             : <>{tr("Analyse recruitment need", "Personalbedarf analysieren")}<Icon name="arrow" /></>}
         </button>
-        <div className="privacy-note"><Icon name="shield" />{tr("Processed securely · not used to train models", "Sicher verarbeitet · nicht zum Modelltraining verwendet")}</div>
+        {error && <p className="intake-error" role="alert">{error}</p>}
+        <div className="privacy-note"><Icon name="shield" />{tr("Personal-data masking · OpenAI response storage disabled", "Maskierung personenbezogener Daten · OpenAI-Antwortspeicherung deaktiviert")}</div>
       </div>
     </section>
     <section className="process-strip" id="how">

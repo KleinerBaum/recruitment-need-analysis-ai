@@ -66,29 +66,35 @@ export function calculateMarketScenario(rawInput: MarketScenarioRequest): Market
   );
   const baselineReachIndex = reachIndex(input, mustHaveSkills.length);
 
-  const whatIfRows = addedSkills.map((addedSkill) => {
-    const resultingMustHaveSkillCount = mustHaveSkills.length + 1;
+  const whatIfRows = addedSkills.map((addedSkill, index) => {
+    const resultingMustHaveSkillCount = mustHaveSkills.length + index + 1;
     const resultingReach = reachIndex(input, resultingMustHaveSkillCount);
+    const previousReach = index === 0
+      ? baselineReachIndex
+      : reachIndex(input, resultingMustHaveSkillCount - 1);
     return {
       addedSkill,
       resultingMustHaveSkillCount,
       reachIndex: resultingReach,
-      deltaPoints: roundPointDelta(resultingReach - baselineReachIndex),
+      deltaPoints: roundPointDelta(resultingReach - previousReach),
       explanation: {
         de: `Synthetisches Szenario: Ein zusätzliches Muss-Kriterium senkt den relativen Reach-Index vor Begrenzung auf 0–100 pauschal um ${MUST_HAVE_PENALTY} Punkte. Für „${addedSkill}“ wird keine spezifische Knappheit behauptet.`,
         en: `Synthetic scenario: one additional must-have lowers the relative reach index by a fixed ${MUST_HAVE_PENALTY} points before the 0–100 bounds are applied. No skill-specific scarcity is claimed for “${addedSkill}”.`,
       },
     };
   });
+  const scenarioReachIndex = whatIfRows.at(-1)?.reachIndex ?? baselineReachIndex;
 
   return MarketScenarioResultSchema.parse({
     status: "synthetic_scenario_only",
     metric: "synthetic_scenario_reach_index",
     unit: "relative_points_0_to_100",
-    reachIndex: baselineReachIndex,
+    baselineReachIndex,
+    reachIndex: scenarioReachIndex,
+    deltaPoints: roundPointDelta(scenarioReachIndex - baselineReachIndex),
     whatIfRows,
     provenance: {
-      methodId: "synthetic_candidate_reach_v1",
+      methodId: "synthetic_candidate_reach_v2",
       dataBasis: "scenario_inputs_only",
       formula:
         "clamp(0,100,78 + min(radiusKm,200)*0.06 + remoteSharePercent*0.12 + seniorityAdjustment - mustHaveSkillCount*4)",
@@ -98,6 +104,34 @@ export function calculateMarketScenario(rawInput: MarketScenarioRequest): Market
       usesLlm: false,
       modelsSkillSpecificScarcity: false,
     },
+    references: [
+      {
+        id: "ba_entgeltatlas",
+        label: {
+          de: "Entgeltatlas der Bundesagentur für Arbeit",
+          en: "Federal Employment Agency remuneration atlas",
+        },
+        url: "https://web.arbeitsagentur.de/entgeltatlas/",
+        dataImported: false,
+        note: {
+          de: "Offizielle Referenz für beobachtete Medianentgelte. In diesem Szenario werden keine Werte automatisiert übernommen.",
+          en: "Official reference for observed median remuneration. This scenario does not import values automatically.",
+        },
+      },
+      {
+        id: "ba_labour_market_statistics",
+        label: {
+          de: "Arbeitsmarktstatistik der Bundesagentur für Arbeit",
+          en: "Federal Employment Agency labour-market statistics",
+        },
+        url: "https://statistik.arbeitsagentur.de/DE/Navigation/Service/API/API-Start-Nav.html",
+        dataImported: false,
+        note: {
+          de: "Offizielle Referenz für aggregierte Arbeitsmarktdaten. Es werden keine Kandidatenbestände behauptet.",
+          en: "Official reference for aggregate labour-market data. No candidate inventory is claimed.",
+        },
+      },
+    ],
     assumptions: [
       {
         de: "Der Index ist eine relative, synthetische Entscheidungshilfe. 100 bedeutet nicht 100 Kandidat:innen.",
