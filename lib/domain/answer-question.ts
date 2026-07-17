@@ -7,6 +7,9 @@ import {
   type AnalysisResponse,
   type AnswerVacancyQuestionRequest,
   type EditVacancyFactRequest,
+  type Evidence,
+  type EscoConcept,
+  type EscoSkillRelationAttestation,
   type JsonValue,
   type Question,
   type VacancyAnswerAction,
@@ -20,6 +23,13 @@ import {
   assessCompleteness,
   selectNextQuestions,
 } from "@/lib/domain/question-engine";
+import {
+  assertValidBriefEscoProvenance,
+  assertValidEscoSkillRelation,
+  escoRelationEvidenceQuote,
+  escoRelationSourceId,
+  type EscoSkillRelationClaim,
+} from "@/lib/server/esco-provenance";
 
 export type AnswerQuestionErrorCode =
   | "question_not_available"
@@ -70,6 +80,17 @@ type FactMutationInput = {
   brief: VacancyBrief;
   fieldId: VacancyFieldId;
   action: VacancyAnswerAction;
+};
+
+/** Server-internal proof populated only after a live official ESCO edge check. */
+export type VerifiedEscoSkillAcceptance = {
+  occupationUri: string;
+  skillUri: string;
+  relation: "essential" | "optional";
+  version: string;
+  language: "de" | "en";
+  label: string;
+  attestation: EscoSkillRelationAttestation;
 };
 
 function validateAnswerValue(target: AnswerTarget, value: VacancyAnswerValue): JsonValue {
@@ -172,10 +193,108 @@ function replaceFact(brief: VacancyBrief, fact: VacancyFact): VacancyFact[] {
   return brief.facts.map((item, index) => (index === currentIndex ? fact : item));
 }
 
+function escoConceptKey(uri: string): string {
+  try {
+    const url = new URL(uri);
+    return `${url.hostname.toLocaleLowerCase()}${url.pathname.toLocaleLowerCase()}`;
+  } catch {
+    return uri.toLocaleLowerCase();
+  }
+}
+
+function normalizedSkillLabel(label: string): string {
+  return label.toLocaleLowerCase().trim();
+}
+
+function escoRelationForField(
+  fieldId: VacancyFieldId,
+): VerifiedEscoSkillAcceptance["relation"] | null {
+  if (fieldId === "requirements.mustHaveSkills") return "essential";
+  if (fieldId === "requirements.niceToHaveSkills") return "optional";
+  return null;
+}
+
+function escoEvidenceSupportsSkill(
+  evidence: Evidence,
+  skill: EscoConcept,
+  relation: VerifiedEscoSkillAcceptance["relation"],
+): boolean {
+  const evidenceUrl = evidence.locator.url;
+  return evidence.sourceType === "esco"
+    && typeof evidenceUrl === "string"
+    && escoConceptKey(evidenceUrl) === escoConceptKey(skill.uri)
+    && evidence.sourceId.startsWith("esco-relation-")
+    && evidence.sourceId.includes(`-${relation}-`)
+    && evidence.escoAttestation?.relation === relation
+    && skill.attestation.scope === "skill_relation"
+    && evidence.escoAttestation.signature === skill.attestation.signature;
+}
+
+function validateVerifiedEscoAcceptance(
+  request: FactMutationInput,
+  acceptance: VerifiedEscoSkillAcceptance,
+): VerifiedEscoSkillAcceptance {
+  const primaryOccupation = request.brief.esco.primaryOccupation;
+  if (
+    !primaryOccupation
+    || primaryOccupation.uri !== acceptance.occupationUri
+    || primaryOccupation.version !== acceptance.version
+  ) {
+    return invalidAnswer(
+      "The ESCO acceptance does not match the brief's confirmed primary occupation.",
+    );
+  }
+  if (request.brief.locale !== acceptance.language) {
+    return invalidAnswer("The ESCO acceptance language does not match the brief locale.");
+  }
+  if (acceptance.attestation.relation !== acceptance.relation) {
+    return invalidAnswer("The signed ESCO relation does not match the accepted relation.");
+  }
+  assertValidEscoSkillRelation({
+    briefId: request.brief.id,
+    occupationUri: acceptance.occupationUri,
+    occupationVersion: acceptance.version,
+    skillUri: acceptance.skillUri,
+    skillLabel: acceptance.label,
+    skillLanguage: acceptance.language,
+    skillVersion: acceptance.version,
+    skillAlternativeLabels: [],
+    relation: acceptance.relation,
+  }, acceptance.attestation);
+  const expectedFieldId = acceptance.relation === "essential"
+    ? "requirements.mustHaveSkills"
+    : "requirements.niceToHaveSkills";
+  if (request.fieldId !== expectedFieldId) {
+    return invalidAnswer("The ESCO skill relation is not compatible with the target field.");
+  }
+  if (
+    request.action.kind !== "answer"
+    || !Array.isArray(request.action.value)
+    || !request.action.value.includes(acceptance.label)
+  ) {
+    return invalidAnswer("The answer must explicitly contain the accepted ESCO skill label.");
+  }
+  return acceptance;
+}
+
+function acceptedEscoSkill(acceptance: VerifiedEscoSkillAcceptance): EscoConcept {
+  return {
+    uri: acceptance.skillUri,
+    conceptType: "skill",
+    preferredLabel: acceptance.label,
+    alternativeLabels: [],
+    language: acceptance.language,
+    version: acceptance.version,
+    source: "official_esco",
+    attestation: acceptance.attestation,
+  };
+}
+
 function nextBrief(
   brief: VacancyBrief,
   fact: VacancyFact,
   recordedAt: string,
+  escoSkill?: EscoConcept,
 ): VacancyBrief {
   const facts = replaceFact(brief, fact);
   const { title: previousTitle, ...briefWithoutTitle } = brief;
@@ -185,12 +304,35 @@ function nextBrief(
     : fact.fieldId === "role.title"
       ? undefined
       : previousTitle;
+  const acceptedSkillKey = escoSkill ? escoConceptKey(escoSkill.uri) : null;
+  const skillAlreadyPresent = acceptedSkillKey !== null
+    && brief.esco.skills.some((skill) => escoConceptKey(skill.uri) === acceptedSkillKey);
+  const skillsWithAccepted = escoSkill
+    ? skillAlreadyPresent
+      ? brief.esco.skills.map((skill) => (
+        escoConceptKey(skill.uri) === acceptedSkillKey ? escoSkill : skill
+      ))
+      : [...brief.esco.skills, escoSkill]
+    : brief.esco.skills;
+  const reconciledSkills = skillsWithAccepted.filter((skill) => facts.some((candidateFact) => {
+    const relation = escoRelationForField(candidateFact.fieldId);
+    if (!relation || !Array.isArray(candidateFact.value)) return false;
+    const documentedLabels = new Set(candidateFact.value
+      .filter((item): item is string => typeof item === "string")
+      .map(normalizedSkillLabel));
+    return documentedLabels.has(normalizedSkillLabel(skill.preferredLabel))
+      && candidateFact.evidence.some(
+        (evidence) => escoEvidenceSupportsSkill(evidence, skill, relation),
+      );
+  }));
+  const esco = { ...brief.esco, skills: reconciledSkills };
 
   return VacancyBriefSchema.parse({
     ...briefWithoutTitle,
     ...(title ? { title } : {}),
     revision: brief.revision + 1,
     facts,
+    esco,
     updatedAt: recordedAt,
   });
 }
@@ -199,7 +341,12 @@ function mutateFact(
   request: FactMutationInput,
   target: AnswerTarget,
   options: AnswerQuestionOptions,
+  verifiedEscoAcceptance?: VerifiedEscoSkillAcceptance,
 ): AnalysisResponse {
+  assertValidBriefEscoProvenance(request.brief);
+  const escoAcceptance = verifiedEscoAcceptance
+    ? validateVerifiedEscoAcceptance(request, verifiedEscoAcceptance)
+    : undefined;
   if (request.action.kind === "not_applicable" && !target.allowNotApplicable) {
     throw new AnswerQuestionError(
       "invalid_answer",
@@ -216,9 +363,60 @@ function mutateFact(
   const recordedAt = (options.now?.() ?? new Date()).toISOString();
   const id = options.idFactory?.() ?? randomUUID();
   const sourceId = `user-answer-${id}`;
+  const escoClaim: EscoSkillRelationClaim | undefined = escoAcceptance
+    ? {
+      briefId: request.brief.id,
+      occupationUri: escoAcceptance.occupationUri,
+      occupationVersion: escoAcceptance.version,
+      skillUri: escoAcceptance.skillUri,
+      skillLabel: escoAcceptance.label,
+      skillLanguage: escoAcceptance.language,
+      skillVersion: escoAcceptance.version,
+      skillAlternativeLabels: [],
+      relation: escoAcceptance.relation,
+    }
+    : undefined;
+  const escoSourceId = escoClaim
+    ? escoRelationSourceId(escoClaim)
+    : undefined;
   const previousFact = request.brief.facts.find((item) => item.fieldId === request.fieldId);
+  const currentSkillLabels = escoRelationForField(request.fieldId) && Array.isArray(value)
+    ? new Set(value
+      .filter((item): item is string => typeof item === "string")
+      .map(normalizedSkillLabel))
+    : null;
+  const expectedEscoRelation = escoRelationForField(request.fieldId);
+  const validPreviousEvidence = (previousFact?.evidence ?? []).filter((item) => {
+    if (item.sourceType !== "esco") return true;
+    if (!currentSkillLabels || !expectedEscoRelation || typeof item.locator.url !== "string") {
+      return false;
+    }
+    const skill = request.brief.esco.skills.find(
+      (candidate) => escoConceptKey(candidate.uri) === escoConceptKey(item.locator.url ?? ""),
+    );
+    return Boolean(
+      skill
+      && currentSkillLabels.has(normalizedSkillLabel(skill.preferredLabel))
+      && escoEvidenceSupportsSkill(item, skill, expectedEscoRelation),
+    );
+  });
+  const previousEvidenceCapacity = escoAcceptance ? 73 : 74;
+  const currentEscoEvidence = validPreviousEvidence.filter(
+    (item) => item.sourceType === "esco",
+  ).slice(-previousEvidenceCapacity);
+  const otherEvidenceCapacity = previousEvidenceCapacity - currentEscoEvidence.length;
+  const retainedPreviousEvidence = [
+    ...(otherEvidenceCapacity > 0
+      ? validPreviousEvidence
+        .filter((item) => item.sourceType !== "esco")
+        .slice(-otherEvidenceCapacity)
+      : []),
+    // Keep currently valid ESCO evidence newest so it cannot age out of the
+    // 75-item fact limit and remains visible in the evidence panel.
+    ...currentEscoEvidence,
+  ];
   const evidence = [
-    ...(previousFact?.evidence ?? []).slice(-49),
+    ...retainedPreviousEvidence,
     {
       id: `evidence-${id}`,
       sourceId,
@@ -227,7 +425,40 @@ function mutateFact(
       locator: {},
       language: request.brief.locale,
     },
+    ...(escoAcceptance && escoClaim && escoSourceId
+      ? [{
+        id: `evidence-esco-${id}`,
+        sourceId: escoSourceId,
+        sourceType: "esco" as const,
+        quote: escoRelationEvidenceQuote(escoClaim),
+        locator: { url: escoAcceptance.skillUri },
+        language: escoAcceptance.language,
+        escoAttestation: escoAcceptance.attestation,
+      }]
+      : []),
   ];
+  const evidenceSourceIds = [...new Set(evidence.map((item) => item.sourceId))];
+  const evidenceSourceIdSet = new Set(evidenceSourceIds);
+  const orderedSourceIds = [...new Set([
+    ...(previousFact?.provenance.sourceIds ?? []).filter(
+      (previousSourceId) => !previousSourceId.startsWith("esco-relation-")
+        || evidenceSourceIdSet.has(previousSourceId),
+    ),
+    ...evidenceSourceIds,
+  ])];
+  const nonEvidenceSourceIds = orderedSourceIds.filter(
+    (previousSourceId) => !evidenceSourceIdSet.has(previousSourceId),
+  );
+  const nonEvidenceCapacity = Math.max(0, 75 - evidenceSourceIds.length);
+  const retainedNonEvidenceSourceIds = new Set(
+    nonEvidenceCapacity > 0
+      ? nonEvidenceSourceIds.slice(-nonEvidenceCapacity)
+      : [],
+  );
+  const boundedSourceIds = orderedSourceIds.filter(
+    (previousSourceId) => evidenceSourceIdSet.has(previousSourceId)
+      || retainedNonEvidenceSourceIds.has(previousSourceId),
+  );
   const fact = VacancyFactSchema.parse({
     fieldId: request.fieldId,
     value,
@@ -238,13 +469,18 @@ function mutateFact(
       origin: "user",
       method: "user_entry",
       sourceIds: [
-        ...new Set([...(previousFact?.provenance.sourceIds ?? []), sourceId]),
+        ...boundedSourceIds,
       ],
       recordedAt,
     },
     hasConflict: false,
   });
-  const brief = nextBrief(request.brief, fact, recordedAt);
+  const brief = nextBrief(
+    request.brief,
+    fact,
+    recordedAt,
+    escoAcceptance ? acceptedEscoSkill(escoAcceptance) : undefined,
+  );
   const completeness = assessCompleteness(brief);
   const nextQuestions = selectNextQuestions(brief, { locale: brief.locale, limit: 3 });
   const responseStatus: AnalysisResponse["status"] = completeness.conflictFieldIds.length > 0
@@ -300,4 +536,25 @@ export function editVacancyFact(
     );
   }
   return mutateFact(request, target, options);
+}
+
+/**
+ * Apply an ESCO-backed skill edit only after the caller has independently
+ * verified the exact occupation/skill edge against the official ESCO API.
+ * This function is server-only and is never wired to the generic fact route.
+ */
+export function editVacancyFactWithVerifiedEsco(
+  request: EditVacancyFactRequest,
+  verifiedEscoAcceptance: VerifiedEscoSkillAcceptance,
+  options: AnswerQuestionOptions = {},
+): AnalysisResponse {
+  const target = QUESTION_CATALOG.find((definition) => definition.fieldId === request.fieldId);
+  if (!target) {
+    throw new AnswerQuestionError(
+      "field_not_editable",
+      "The field does not have a canonical answer definition.",
+      400,
+    );
+  }
+  return mutateFact(request, target, options, verifiedEscoAcceptance);
 }

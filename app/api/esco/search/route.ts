@@ -6,13 +6,19 @@ import {
   EscoIntegrationError,
   searchEscoConcepts,
 } from "@/lib/integrations/esco";
+import {
+  EscoProvenanceError,
+  attestEscoOccupation,
+} from "@/lib/server/esco-provenance";
 
 export const runtime = "nodejs";
 
 const SearchQuerySchema = z.strictObject({
   query: z.string().trim().min(2).max(160),
   locale: z.enum(["de", "en"]).default("de"),
-  type: z.enum(["occupation", "skill"]).default("occupation"),
+  // Persisted skill relations are discovered through the related-resource API
+  // and receive a brief-bound attestation only after live verification.
+  type: z.literal("occupation").default("occupation"),
   limit: z.coerce.number().int().min(1).max(20).default(8),
 });
 
@@ -45,15 +51,21 @@ export async function GET(request: Request): Promise<NextResponse> {
       catalogLabel: result.mode === "live"
         ? "live_official_esco_api"
         : "verified_offline_esco_catalog",
-      concepts: result.concepts.map((concept) => ({
-        uri: concept.uri,
-        conceptType: concept.type,
-        preferredLabel: concept.preferredLabel,
-        alternativeLabels: [],
-        language: parsed.data.locale,
-        version: concept.version,
-        source: "official_esco",
-      })),
+      concepts: result.concepts.map((concept) => {
+        const signedConcept = {
+          uri: concept.uri,
+          conceptType: "occupation" as const,
+          preferredLabel: concept.preferredLabel,
+          alternativeLabels: [],
+          language: parsed.data.locale,
+          version: concept.version,
+          source: "official_esco" as const,
+        };
+        return {
+          ...signedConcept,
+          attestation: attestEscoOccupation(signedConcept),
+        };
+      }),
       ...(result.warning ? { warning: result.warning } : {}),
     });
     return NextResponse.json(response, {
@@ -61,6 +73,12 @@ export async function GET(request: Request): Promise<NextResponse> {
       headers: { "Cache-Control": "private, max-age=60" },
     });
   } catch (error) {
+    if (error instanceof EscoProvenanceError) {
+      return NextResponse.json(
+        { error: { code: error.code, message: error.message, retryable: error.retryable } },
+        { status: error.status, headers: { "Cache-Control": "no-store" } },
+      );
+    }
     const mapped = error instanceof EscoIntegrationError
       ? error
       : new EscoIntegrationError("provider_unavailable", "ESCO is temporarily unavailable.", {

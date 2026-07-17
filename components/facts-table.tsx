@@ -56,7 +56,7 @@ function FactRow({ fact, tr, expanded, onUpdate }: {
     <span className="fact-confidence">{saving ? tr("Saving…", "Speichert…") : stateLabel}</span>
     {expanded && (fact.evidence.length > 0 || fact.provenance) && <details className="fact-evidence">
       <summary><Icon name="evidence" />{tr(`${fact.evidence.length} evidence item(s)`, `${fact.evidence.length} Evidenzbeleg(e)`)}</summary>
-      {fact.evidence.slice(0, 5).map((evidence) => <blockquote key={evidence.id}>“{evidence.quote}” <small>{evidence.sourceType} · {evidence.sourceId}</small></blockquote>)}
+      {fact.evidence.slice(-5).reverse().map((evidence) => <blockquote key={evidence.id}>“{evidence.quote}” <small>{evidence.sourceType} · {evidence.sourceId}</small></blockquote>)}
       {fact.provenance && <p>{fact.provenance.method}{fact.provenance.model ? ` · ${fact.provenance.model}` : ""}{fact.provenance.promptVersion ? ` · ${fact.provenance.promptVersion}` : ""}</p>}
     </details>}
     {expanded && fact.conflictDescription && <small className="fact-conflict">{fact.conflictDescription}</small>}

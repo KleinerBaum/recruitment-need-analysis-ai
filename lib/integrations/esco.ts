@@ -4,6 +4,7 @@ const DEFAULT_ESCO_API_BASE_URL = "https://ec.europa.eu/esco/api";
 /** Current public ESCO release (10 December 2025). */
 export const ESCO_VERSION = "v1.2.1";
 const DEFAULT_TIMEOUT_MS = 8_000;
+const DEFAULT_RELATION_TIMEOUT_MS = 20_000;
 const ESCO_URI_PATTERN = /^https?:\/\/data\.europa\.eu\/esco\/(occupation|skill)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
 export type EscoConceptType = "occupation" | "skill";
@@ -22,6 +23,20 @@ export type EscoSearchResult = {
   concepts: EscoConcept[];
   version: typeof ESCO_VERSION;
   warning?: string;
+};
+
+export type EscoOccupationSkillRelation = {
+  uri: string;
+  preferredLabel: string;
+  relation: "essential" | "optional";
+  source: "official_esco_api";
+  version: typeof ESCO_VERSION;
+};
+
+export type EscoOccupationSkillRelationsResult = {
+  status: "available" | "partial" | "unavailable";
+  skills: EscoOccupationSkillRelation[];
+  warning?: { de: string; en: string };
 };
 
 export class EscoIntegrationError extends Error {
@@ -60,6 +75,13 @@ const EscoSearchResponseSchema = z
         results: z.array(EscoApiResultSchema).default([]),
       })
       .optional(),
+  })
+  .passthrough();
+
+const EscoRelatedResponseSchema = z
+  .object({
+    total: z.number().int().nonnegative().optional(),
+    _embedded: z.record(z.string(), z.array(EscoApiResultSchema)).optional(),
   })
   .passthrough();
 
@@ -280,6 +302,137 @@ export async function searchEscoConcepts(
       status: 502,
       retryable: true,
     });
+  } finally {
+    timeout.dispose();
+  }
+}
+
+/** Retrieve authoritative occupation-to-skill edges from the ESCO API. */
+export async function getEscoOccupationSkillRelations(
+  input: {
+    occupationUri: string;
+    locale: "de" | "en";
+    limitPerRelation?: number;
+  },
+  options: {
+    fetchImpl?: typeof fetch;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+  } = {},
+): Promise<EscoOccupationSkillRelationsResult> {
+  if (typeof window !== "undefined") {
+    throw new EscoIntegrationError("invalid_input", "ESCO relations are server-only.", {
+      status: 500,
+      retryable: false,
+    });
+  }
+  const occupationMatch = input.occupationUri.match(ESCO_URI_PATTERN);
+  if (occupationMatch?.[1]?.toLocaleLowerCase() !== "occupation") {
+    throw new EscoIntegrationError("invalid_input", "Enter a valid ESCO occupation URI.", {
+      status: 400,
+      retryable: false,
+    });
+  }
+  const limit = Math.min(Math.max(input.limitPerRelation ?? 50, 1), 50);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const timeout = withTimeout(
+    options.signal,
+    options.timeoutMs ?? DEFAULT_RELATION_TIMEOUT_MS,
+  );
+  const relations = [
+    { api: "hasEssentialSkill", value: "essential" as const },
+    { api: "hasOptionalSkill", value: "optional" as const },
+  ];
+
+  try {
+    const configuredBase = process.env.ESCO_API_BASE_URL?.trim() || DEFAULT_ESCO_API_BASE_URL;
+    const settled = await Promise.allSettled(relations.map(async (relation) => {
+      const skills = new Map<string, EscoOccupationSkillRelation>();
+      let truncated = false;
+      const maxPages = 4;
+      for (let page = 0; page < maxPages; page += 1) {
+        const offset = page * limit;
+        const url = new URL(`${configuredBase.replace(/\/$/u, "")}/resource/related`);
+        url.searchParams.set("uri", input.occupationUri);
+        url.searchParams.set("relation", relation.api);
+        url.searchParams.set("language", input.locale);
+        url.searchParams.set("selectedVersion", ESCO_VERSION);
+        url.searchParams.set("limit", String(limit));
+        url.searchParams.set("offset", String(offset));
+        const response = await fetchImpl(url, {
+          method: "GET",
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+          signal: timeout.signal,
+        });
+        if (!response.ok) throw new EscoUnavailableError();
+        const parsed = EscoRelatedResponseSchema.safeParse(await response.json());
+        if (!parsed.success) throw new EscoUnavailableError();
+        const embedded = parsed.data._embedded?.[relation.api] ?? [];
+        for (const skill of embedded
+          .map((item) => normalizeLiveConcept(item, input.locale, "skill"))
+          .filter((skill): skill is EscoConcept => skill !== null)
+          .map((skill): EscoOccupationSkillRelation => ({
+            uri: skill.uri,
+            preferredLabel: skill.preferredLabel,
+            relation: relation.value,
+            source: "official_esco_api",
+            version: ESCO_VERSION,
+          }))) {
+          skills.set(skill.uri, skill);
+        }
+        const total = parsed.data.total;
+        if ((total !== undefined && skills.size >= total) || embedded.length < limit) break;
+        if (page === maxPages - 1) truncated = true;
+      }
+      return { skills: [...skills.values()], truncated };
+    }));
+
+    const skills = new Map<string, EscoOccupationSkillRelation>();
+    for (const result of settled) {
+      if (result.status !== "fulfilled") continue;
+      for (const skill of result.value.skills) {
+        const prior = skills.get(skill.uri);
+        if (!prior || skill.relation === "essential") skills.set(skill.uri, skill);
+      }
+    }
+    const failedCount = settled.filter((result) => result.status === "rejected").length;
+    const truncated = settled.some(
+      (result) => result.status === "fulfilled" && result.value.truncated,
+    );
+    return {
+      status: failedCount === relations.length
+        ? "unavailable"
+        : failedCount > 0 || truncated
+          ? "partial"
+          : "available",
+      // Each relation is already bounded by `maxPages * limit`. Return the
+      // complete bounded set so optional relations are not silently dropped.
+      skills: [...skills.values()],
+      ...(failedCount > 0 || truncated
+        ? {
+          warning: failedCount > 0
+            ? {
+              de: "Ein Teil der offiziellen ESCO-Skill-Beziehungen ist vorübergehend nicht verfügbar.",
+              en: "Some official ESCO skill relations are temporarily unavailable.",
+            }
+            : {
+              de: "Die offizielle ESCO-Relation ist sehr umfangreich; es wird eine begrenzte Teilmenge gezeigt.",
+              en: "The official ESCO relation is extensive; a bounded subset is shown.",
+            },
+        }
+        : {}),
+    };
+  } catch (error) {
+    if (error instanceof EscoIntegrationError) throw error;
+    return {
+      status: "unavailable",
+      skills: [],
+      warning: {
+        de: "Offizielle ESCO-Skill-Beziehungen sind vorübergehend nicht verfügbar.",
+        en: "Official ESCO skill relations are temporarily unavailable.",
+      },
+    };
   } finally {
     timeout.dispose();
   }

@@ -3,10 +3,126 @@ import { RESOURCE_MIME_TYPE, registerAppResource, registerAppTool } from "@model
 import { z } from "zod";
 
 import { POST as analyzePost } from "@/app/api/analyze/route";
+import {
+  type RecruitmentKnowledgeResponse,
+  RecruitmentKnowledgeRequestSchema,
+  RecruitmentKnowledgeResponseSchema,
+} from "@/lib/contracts";
 import { calculateMarketScenario } from "@/lib/market/scenario";
 import { searchEscoConcepts } from "@/lib/integrations/esco";
 import { retrieveGroundedSpans } from "@/lib/integrations/rag";
+import { enrichRecruitmentKnowledge } from "@/lib/integrations/recruitment-knowledge";
+import {
+  getKnowledgeGuardConfig,
+  isKnowledgeResponseCacheable,
+  knowledgeRateLimiter,
+  knowledgeResponseCache,
+} from "@/lib/server/knowledge-guard";
 import { recruitmentWidgetHtml, WIDGET_URI } from "@/mcp/widget";
+
+const ModelSafeKnowledgeSuggestionSchema = z.strictObject({
+  kind: z.enum(["esco_skill", "job_posting_pattern", "market_context"]),
+  status: z.literal("suggestion_only"),
+  targetFieldId: z.string().trim().min(1).max(160).optional(),
+  conceptUri: z.string().url().optional(),
+  relation: z.enum(["essential", "optional"]).optional(),
+  sourceAuthority: z.enum(["retrieved_reference", "official_esco_api"]),
+  summary: z.strictObject({
+    de: z.string().trim().min(1).max(300),
+    en: z.string().trim().min(1).max(300),
+  }),
+});
+
+const ModelSafeSalaryBenchmarkSchema = z.strictObject({
+  status: z.literal("historical_reference_only"),
+  currency: z.literal("USD"),
+  datasetPeriod: z.strictObject({
+    from: z.number().int().min(2000).max(2100),
+    to: z.number().int().min(2000).max(2100),
+  }),
+  sampleSize: z.number().int().positive().max(100_000),
+  p25: z.number().nonnegative(),
+  median: z.number().nonnegative(),
+  p75: z.number().nonnegative(),
+  relaxedFilters: z.array(z.enum(["experience_level", "company_location"])).max(2),
+  licenseStatus: z.enum(["unverified", "approved", "verified"]),
+  isForecast: z.literal(false),
+  modelsSkillPremium: z.literal(false),
+});
+
+const RecruitmentKnowledgeToolOutputSchema = z.strictObject({
+  kind: z.literal("recruitment_knowledge"),
+  status: RecruitmentKnowledgeResponseSchema.shape.status,
+  mode: z.literal("suggestion_only"),
+  suggestionCount: z.number().int().nonnegative().max(12),
+  referenceCount: z.number().int().nonnegative().max(24),
+  suggestions: z.array(ModelSafeKnowledgeSuggestionSchema).max(12),
+  corpora: RecruitmentKnowledgeResponseSchema.shape.corpora,
+  salaryBenchmark: ModelSafeSalaryBenchmarkSchema.optional(),
+  warnings: RecruitmentKnowledgeResponseSchema.shape.warnings,
+});
+
+const genericSuggestionSummary = (kind: RecruitmentKnowledgeResponse["suggestions"][number]["kind"]) => {
+  if (kind === "esco_skill") {
+    return {
+      de: "Eine offizielle ESCO-Skill-Beziehung steht zur Prüfung in der App bereit.",
+      en: "An official ESCO skill relation is ready for review in the app.",
+    };
+  }
+  if (kind === "job_posting_pattern") {
+    return {
+      de: "Ein belegtes Muster aus freigegebenen Stellenanzeigen steht zur Prüfung in der App bereit.",
+      en: "An attributed pattern from licensed job postings is ready for review in the app.",
+    };
+  }
+  return {
+    de: "Ein belegter Marktkontext steht zur Prüfung in der App bereit.",
+    en: "An attributed market-context item is ready for review in the app.",
+  };
+};
+
+/**
+ * Keep retrieved prose out of the model-visible MCP result. The full, validated
+ * response is delivered separately through tool-result `_meta`, which is
+ * component-visible only in the Apps SDK contract.
+ */
+export function modelSafeKnowledgeOutput(knowledge: RecruitmentKnowledgeResponse) {
+  return RecruitmentKnowledgeToolOutputSchema.parse({
+    kind: "recruitment_knowledge",
+    status: knowledge.status,
+    mode: knowledge.mode,
+    suggestionCount: knowledge.suggestions.length,
+    referenceCount: knowledge.references.length,
+    suggestions: knowledge.suggestions.map((suggestion) => ({
+      kind: suggestion.kind,
+      status: suggestion.status,
+      ...(suggestion.targetFieldId ? { targetFieldId: suggestion.targetFieldId } : {}),
+      ...(suggestion.conceptUri ? { conceptUri: suggestion.conceptUri } : {}),
+      ...(suggestion.relation ? { relation: suggestion.relation } : {}),
+      sourceAuthority: suggestion.sourceAuthority,
+      summary: genericSuggestionSummary(suggestion.kind),
+    })),
+    corpora: knowledge.corpora,
+    ...(knowledge.salaryBenchmark
+      ? {
+        salaryBenchmark: {
+          status: knowledge.salaryBenchmark.status,
+          currency: knowledge.salaryBenchmark.currency,
+          datasetPeriod: knowledge.salaryBenchmark.datasetPeriod,
+          sampleSize: knowledge.salaryBenchmark.sampleSize,
+          p25: knowledge.salaryBenchmark.p25,
+          median: knowledge.salaryBenchmark.median,
+          p75: knowledge.salaryBenchmark.p75,
+          relaxedFilters: knowledge.salaryBenchmark.filters.relaxedFilters,
+          licenseStatus: knowledge.salaryBenchmark.source.licenseStatus,
+          isForecast: knowledge.salaryBenchmark.provenance.isForecast,
+          modelsSkillPremium: knowledge.salaryBenchmark.provenance.modelsSkillPremium,
+        },
+      }
+      : {}),
+    warnings: knowledge.warnings,
+  });
+}
 
 const toolMeta = (invoking: string, invoked: string) => ({
   ui: { resourceUri: WIDGET_URI, visibility: ["model", "app"] as const },
@@ -150,6 +266,70 @@ export function createRecruitmentMcpServer(): McpServer {
         structuredContent: { kind: "grounded_evidence", query, spans },
         _meta: { retrieval: "deterministic_lexical", evidencePolicy: "exact-source-spans-only" }
       };
+    }
+  );
+
+  registerAppTool(
+    server,
+    "retrieve_recruitment_knowledge",
+    {
+      title: "Retrieve recruitment knowledge",
+      description: "Use this when a vacancy needs suggestion-only context from attributed ESCO, job-posting, or historical market references. Retrieved content never becomes a vacancy fact automatically.",
+      inputSchema: RecruitmentKnowledgeRequestSchema,
+      outputSchema: RecruitmentKnowledgeToolOutputSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+      _meta: toolMeta("Retrieving attributed recruitment knowledge…", "Knowledge suggestions ready")
+    },
+    async (input, extra) => {
+      try {
+        const config = getKnowledgeGuardConfig();
+        const rateLimit = knowledgeRateLimiter.consume("mcp-recruitment-knowledge", config.rateLimit);
+        if (!rateLimit.allowed) {
+          return toolError(input.locale === "de"
+            ? "Zu viele Wissensabfragen. Bitte kurz warten und erneut versuchen."
+            : "Too many knowledge requests. Please wait briefly and try again.");
+        }
+        const cached = knowledgeResponseCache.get(input);
+        const knowledge = RecruitmentKnowledgeResponseSchema.parse(
+          cached ?? await enrichRecruitmentKnowledge(input, { signal: extra.signal }),
+        );
+        if (!cached && !extra.signal.aborted && isKnowledgeResponseCacheable(knowledge)) {
+          knowledgeResponseCache.set(input, knowledge, {
+            ttlMs: config.cacheTtlMs,
+            maxEntries: config.cacheMaxEntries,
+          });
+        }
+        const salarySummary = knowledge.salaryBenchmark
+          ? input.locale === "de"
+            ? ` Historische Gehaltsreferenz mit ${knowledge.salaryBenchmark.sampleSize} Datensätzen verfügbar; keine Prognose.`
+            : ` A historical salary reference with ${knowledge.salaryBenchmark.sampleSize} records is available; it is not a forecast.`
+          : "";
+        return {
+          content: [{
+            type: "text" as const,
+            text: input.locale === "de"
+              ? `${knowledge.suggestions.length} unverbindliche Wissensvorschläge aus ${knowledge.corpora.length} Datenkorpora abgerufen.${salarySummary}`
+              : `Retrieved ${knowledge.suggestions.length} suggestion-only knowledge item(s) across ${knowledge.corpora.length} corpora.${salarySummary}`,
+          }],
+          structuredContent: modelSafeKnowledgeOutput(knowledge),
+          _meta: {
+            contract: "recruitment-knowledge-v1",
+            mode: "suggestion_only",
+            providerResourceIdsExposed: false,
+            cacheStatus: cached ? "HIT" : "MISS",
+            knowledgeUi: { kind: "recruitment_knowledge" as const, ...knowledge },
+          },
+        };
+      } catch {
+        return toolError(input.locale === "de"
+          ? "Recruitment Knowledge konnte nicht abgerufen werden. Bitte später erneut versuchen."
+          : "Recruitment knowledge could not be retrieved. Please try again later.");
+      }
     }
   );
 

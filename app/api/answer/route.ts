@@ -5,6 +5,7 @@ import {
   AnswerQuestionError,
   answerVacancyQuestion,
 } from "@/lib/domain/answer-question";
+import { EscoProvenanceError } from "@/lib/server/esco-provenance";
 
 export const runtime = "nodejs";
 
@@ -35,6 +36,9 @@ export async function POST(request: Request): Promise<NextResponse> {
       headers: { "Cache-Control": "no-store" },
     });
   } catch (error) {
+    if (error instanceof EscoProvenanceError) {
+      return errorResponse(error.status, error.code, error.message);
+    }
     if (error instanceof AnswerQuestionError) {
       return errorResponse(error.status, error.code, error.message);
     }
