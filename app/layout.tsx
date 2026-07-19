@@ -2,9 +2,9 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Needly — Recruitment Need Analysis",
+  title: "Needly — Recruitment Decision Lab",
   description:
-    "Turn a job ad into a complete, evidence-backed recruitment brief with AI and ESCO.",
+    "Vor der Suche sichtbar machen, was eine Rolle wirklich braucht — evidenzbasiert, nachvollziehbar und entscheidungsbereit.",
   applicationName: "Needly",
   robots: { index: false, follow: false }
 };
@@ -12,12 +12,12 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  themeColor: "#f5f3ed"
+  themeColor: "#07110e"
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
+    <html lang="de">
       <body>{children}</body>
     </html>
   );

@@ -9,16 +9,16 @@ export function WorkspaceNav({ tr, title, completion, step, setStep, mode }: {
   setStep: (value: number) => void; mode: Analysis["mode"];
 }) {
   const items = [
-    [1, tr("Source", "Quelle"), "document"],
-    [2, tr("Clarify", "Klären"), "questions"],
-    [3, tr("Scenario", "Szenario"), "chart"],
-    [4, tr("Review", "Prüfen"), "check"]
+    [1, tr("Start", "Start"), "document"],
+    [2, tr("Sharpen", "Schärfen"), "questions"],
+    [3, tr("Simulate", "Simulieren"), "chart"],
+    [4, tr("Decide", "Entscheiden"), "check"]
   ] as const;
   return <aside className="workspace-nav">
-    <div className="workspace-label">{tr("Vacancy workspace", "Vakanz-Workspace")}</div>
+    <div className="workspace-label">Recruitment Decision Lab</div>
     <div className="score-block">
       <div className="score-ring" style={{ "--score": `${completion * 3.6}deg` } as CSSProperties}><strong>{completion}</strong><span>%</span></div>
-      <div><strong>{title}</strong><span>{tr("brief completeness", "Vollständigkeit")}</span></div>
+      <div><strong>{title}</strong><span>{tr("brief readiness", "Briefing-Readiness")}</span></div>
     </div>
     <nav className="step-nav">
       {items.map(([number, label, icon]) => <button key={number} className={`${step === number ? "active" : ""} ${step > number ? "done" : ""}`} onClick={() => setStep(number)}>
@@ -35,9 +35,9 @@ export function WorkspaceNav({ tr, title, completion, step, setStep, mode }: {
 export function SourceReview({ tr, jobAd, facts, onNext }: { tr: Translator; jobAd: string; facts: Fact[]; onNext: () => void }) {
   return <>
     <div className="section-heading">
-      <div className="eyebrow"><Icon name="document" />01 · {tr("SOURCE", "QUELLE")}</div>
-      <h1>{tr("Your source, cleanly structured.", "Ihre Quelle, sauber strukturiert.")}</h1>
-      <p>{tr("Highlighted statements become proposals; unsupported details stay open.", "Markierte Aussagen werden als Vorschläge übernommen; nicht belegte Angaben bleiben offen.")}</p>
+      <div className="eyebrow"><Icon name="document" />01 · {tr("START", "START")}</div>
+      <h1>{tr("Turn existing input into signals.", "Vorhandenes in Signale übersetzen.")}</h1>
+      <p>{tr("Documented statements become proposals. Everything else remains an explicit open decision.", "Belegte Aussagen werden zu Vorschlägen. Alles andere bleibt eine sichtbare offene Entscheidung.")}</p>
     </div>
     <div className="source-grid">
       <article className="source-document">
@@ -47,7 +47,7 @@ export function SourceReview({ tr, jobAd, facts, onNext }: { tr: Translator; job
       <div className="source-facts">
         <h2>{tr("Detected signals", "Erkannte Signale")}</h2>
         {facts.slice(0, 7).map((fact) => <div key={fact.id}><StatusDot status={fact.status} /><span>{fact.label}</span><strong>{fact.value || tr("Not documented", "Nicht dokumentiert")}</strong></div>)}
-        <button className="primary-button compact" onClick={onNext}>{tr("Clarify the gaps", "Lücken klären")}<Icon name="arrow" /></button>
+        <button className="primary-button compact" onClick={onNext}>{tr("Sharpen open decisions", "Offene Entscheidungen schärfen")}<Icon name="arrow" /></button>
       </div>
     </div>
   </>;
@@ -90,15 +90,35 @@ export function ClarifyPanel({
   const impact = question && question.priority >= 85
     ? tr("HIGH IMPACT", "HOHE WIRKUNG")
     : tr("NEXT PRIORITY", "NÄCHSTE PRIORITÄT");
+  const impactPreview = question?.factId.startsWith("requirements.")
+    ? tr(
+      "Could materially narrow the talent pool and change the evidence needed for assessment.",
+      "Könnte den Talentpool wesentlich verengen und die nötige Evidenz im Auswahlprozess verändern.",
+    )
+    : question?.factId === "role.location" || question?.factId === "role.remoteShare" || question?.factId === "role.seniority"
+      ? tr(
+        "Could materially affect modeled reach and the relevant salary context.",
+        "Könnte modellierte Reichweite und den relevanten Gehaltskontext wesentlich beeinflussen.",
+      )
+      : question?.factId.startsWith("compensation.")
+        ? tr(
+          "Clarifies whether the offer and candidate expectations can align.",
+          "Klärt, ob Angebot und Erwartungen der Zielgruppe zusammenpassen können.",
+        )
+        : tr(
+          "Sharpens the role scope, decision criteria, and final hiring brief.",
+          "Schärft Rollenscope, Entscheidungskriterien und das finale Hiring Briefing.",
+        );
   return <>
     <div className="section-heading">
-      <div className="eyebrow"><Icon name="sparkles" />{tr("NEXT BEST QUESTION", "NÄCHSTE BESTE FRAGE")}</div>
-      <h1>{tr("One answer, maximum clarity.", "Eine Antwort, maximale Klarheit.")}</h1>
+      <div className="eyebrow"><Icon name="sparkles" />02 · {tr("SHARPEN", "SCHÄRFEN")}</div>
+      <h1>{tr("One decision at a time.", "Eine Entscheidung nach der anderen.")}</h1>
       <p>{tr("Questions are ranked by impact and dependency—not generated as a generic checklist.", "Fragen werden nach Wirkung und Abhängigkeiten priorisiert – nicht als generische Checkliste erzeugt.")}</p>
     </div>
     {question ? <article className="question-card">
       <div className="question-meta"><span>{String(questionIndex + 1).padStart(2, "0")}</span><div className="impact-badge"><i />{impact}</div><small>{analysis.questions.length} {tr("in the current adaptive batch", "im aktuellen adaptiven Fragenpaket")}</small></div>
       <h2>{question.text}</h2>
+      <div className="question-impact-preview"><Icon name="chart" /><div><strong>{tr("WHY THIS MATTERS", "WARUM DAS ZÄHLT")}</strong><p>{impactPreview}</p></div><span>{tr("Impact hypothesis", "Wirkungshypothese")}</span></div>
       {question.options?.length ? <div className="choice-grid">
         {question.options.map((option) => {
           const selected = selectedOptionValues.has(option.value);
@@ -114,14 +134,14 @@ export function ClarifyPanel({
             onChange={(event) => setAnswer(event.target.value)}
           />
         : <textarea className="answer-input" value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder={question.answerType === "multi_select" ? tr("Separate several entries with commas…", "Mehrere Einträge mit Kommas trennen…") : tr("Type a concise answer…", "Kurze Antwort eingeben…")} />}
-      <button className="why-toggle" onClick={() => setWhyOpen((open) => !open)}><Icon name="evidence" />{tr("Why this question?", "Warum diese Frage?")}<Icon name="chevron" className={whyOpen ? "rotate" : ""} /></button>
+      <button className="why-toggle" onClick={() => setWhyOpen((open) => !open)}><Icon name="evidence" />{tr("Show decision logic", "Entscheidungslogik anzeigen")}<Icon name="chevron" className={whyOpen ? "rotate" : ""} /></button>
       {whyOpen && <div className="why-panel"><p>{question.rationale}</p></div>}
       <div className="question-actions">
         <button className="text-button" disabled={answerLoading} onClick={() => saveAnswer("declined")}>{tr("Skip transparently", "Transparent überspringen")}</button>
         {question.allowNotApplicable && <button className="text-button" disabled={answerLoading} onClick={() => saveAnswer("not_applicable")}>{tr("Not applicable", "Nicht anwendbar")}</button>}
         <button className="primary-button compact" disabled={!answer.trim() || answerLoading} onClick={() => saveAnswer("answer")}>{answerLoading ? tr("Saving…", "Speichert…") : tr("Save & reprioritise", "Speichern & neu priorisieren")}<Icon name="arrow" /></button>
       </div>
-    </article> : <div className="question-complete"><strong>{tr("Adaptive batch complete", "Adaptives Fragenpaket abgeschlossen")}</strong><p>{analysis.completeness.readyForSummary ? tr("The critical recruitment need is sufficiently documented.", "Der kritische Personalbedarf ist ausreichend dokumentiert.") : tr("No further applicable questions are open; unresolved critical fields remain visible in review.", "Keine weiteren anwendbaren Fragen sind offen; ungelöste kritische Felder bleiben in der Prüfung sichtbar.")}</p><button className="primary-button" onClick={onNext}>{tr("Continue to scenario", "Weiter zum Szenario")}<Icon name="arrow" /></button></div>}
+    </article> : <div className="question-complete"><strong>{tr("Adaptive batch complete", "Adaptives Fragenpaket abgeschlossen")}</strong><p>{analysis.completeness.readyForSummary ? tr("The critical recruitment need is sufficiently documented.", "Der kritische Personalbedarf ist ausreichend dokumentiert.") : tr("No further applicable questions are open; unresolved critical fields remain visible in review.", "Keine weiteren anwendbaren Fragen sind offen; ungelöste kritische Felder bleiben in der Prüfung sichtbar.")}</p><button className="primary-button" onClick={onNext}>{tr("Open the Role Lab", "Role Lab öffnen")}<Icon name="arrow" /></button></div>}
     <FactsTable facts={analysis.facts} tr={tr} onUpdate={updateFact} />
   </>;
 }

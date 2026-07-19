@@ -269,8 +269,8 @@ function relocalizeAnalysis(current: Analysis, nextLocale: Locale): Analysis {
 }
 
 export function RecruitmentWorkspace({ demoAds }: { demoAds: readonly DemoAd[] }) {
-  const [locale, setLocale] = useState<Locale>("en");
-  const localeRef = useRef<Locale>("en");
+  const [locale, setLocale] = useState<Locale>("de");
+  const localeRef = useRef<Locale>("de");
   const [jobAd, setJobAd] = useState("");
   const [inputSource, setInputSource] = useState<InputSource>({ id: "job-ad", type: "pasted_text" });
   const [selectedDemo, setSelectedDemo] = useState<string | null>(null);
@@ -325,6 +325,18 @@ export function RecruitmentWorkspace({ demoAds }: { demoAds: readonly DemoAd[] }
   const escoConfirmed = Boolean(analysis?.esco);
   const mustHaveSkills = useMemo(
     () => valuesForField(facts, "requirements.mustHaveSkills"),
+    [facts],
+  );
+  const roleTasks = useMemo(() => [...new Set([
+    ...valuesForField(facts, "tasks.outcomes"),
+    ...valuesForField(facts, "tasks.responsibilities"),
+  ])].slice(0, 6), [facts]);
+  const roleBenefits = useMemo(
+    () => valuesForField(facts, "compensation.benefits").slice(0, 6),
+    [facts],
+  );
+  const evidenceCount = useMemo(
+    () => facts.filter((fact) => fact.evidence.length > 0).length,
     [facts],
   );
   const skills = useMemo(() => [...new Set([
@@ -907,7 +919,7 @@ export function RecruitmentWorkspace({ demoAds }: { demoAds: readonly DemoAd[] }
                 onRetry={refreshKnowledge}
                 onAcceptSkill={acceptKnowledgeSkill}
               />
-              <ScenarioPanel tr={tr} skills={skills} selected={selectedSkills} setSelected={setSelectedSkills} scenario={scenario} loading={scenarioLoading} error={scenarioError} searchRadiusKm={searchRadiusKm} setSearchRadiusKm={setSearchRadiusKm} remoteSharePercent={remoteSharePercent} setRemoteSharePercent={setRemoteSharePercent} seniority={seniority} setSeniority={setSeniority} onNext={() => setStep(4)} />
+              <ScenarioPanel tr={tr} skills={skills} mustHaveSkills={mustHaveSkills} tasks={roleTasks} benefits={roleBenefits} evidenceCount={evidenceCount} factCount={facts.length} selected={selectedSkills} setSelected={setSelectedSkills} scenario={scenario} loading={scenarioLoading} error={scenarioError} searchRadiusKm={searchRadiusKm} setSearchRadiusKm={setSearchRadiusKm} remoteSharePercent={remoteSharePercent} setRemoteSharePercent={setRemoteSharePercent} seniority={seniority} setSeniority={setSeniority} onNext={() => setStep(4)} />
             </>}
             {step === 4 && <ReviewPanel tr={tr} analysis={analysis} updateFact={updateFact} artifact={artifact} setArtifact={setArtifact} artifactText={artifactText} setArtifactText={(value) => setArtifactDrafts((current) => ({ ...current, [artifact]: value }))} copied={copied} copyArtifact={copyArtifact} />}
           </section>
